@@ -1,0 +1,20 @@
+# Environment
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Output data (jangan commit data dummy yang besar)
+dummy_generator/output/
+
+# Python virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Docker volumes
+postgres_data/
