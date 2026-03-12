@@ -1,4 +1,3 @@
-
 -- TABEL: assets (CMDB Dummy)
 CREATE TABLE IF NOT EXISTS assets (
     asset_id        VARCHAR(100) PRIMARY KEY,
