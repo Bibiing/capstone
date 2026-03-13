@@ -1,35 +1,93 @@
 services:
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:17-alpine
+    image: postgres:16-alpine
     container_name: risk_scoring_db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER:-capstone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-capstone_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-risk_scoring}
     ports:
-      - '${POSTGRES_PORT}:5432'
+      - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${POSTGRES_USER:-capstone} -d ${POSTGRES_DB:-risk_scoring}',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
+  # ── pgAdmin (Development only — start with: docker compose --profile dev up) ─
   pgadmin:
-    image: dpage/pgadmin4:latest
+    image: dpage/pgadmin4:8
     container_name: risk_scoring_pgadmin
+    profiles: ['dev']
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@risk.com
-      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@localhost.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin_dev}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
     ports:
       - '5050:80'
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # ── Risk Scoring Engine — uncomment in Sprint 3-4 ────────────────────────────
+  # risk-engine:
+  #   build: .
+  #   container_name: risk_scoring_engine
+  #   command: python -m engine.scheduler
+  #   env_file: .env
+  #   environment:
+  #     - DATABASE_URL=postgresql://capstone:capstone_dev@postgres:5432/risk_scoring
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   volumes:
+  #     - .:/app
+
+  # ── FastAPI — uncomment in Sprint 3-4 ────────────────────────────────────────
+  # api:
+  #   build: .
+  #   container_name: risk_scoring_api
+  #   command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+  #   ports:
+  #     - "8000:8000"
+  #   env_file: .env
+  #   environment:
+  #     - DATABASE_URL=postgresql://capstone:capstone_dev@postgres:5432/risk_scoring
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+
+  # ── Streamlit Dashboard — uncomment in Sprint 5 ──────────────────────────────
+  # dashboard:
+  #   build: .
+  #   container_name: risk_scoring_dashboard
+  #   command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+  #   ports:
+  #     - "8501:8501"
+  #   env_file: .env
+  #   depends_on:
+  #     - api
+  #   restart: unless-stopped
 
 volumes:
   postgres_data:
+  pgadmin_data:
+
+networks:
+  default:
+    name: risk_scoring_net

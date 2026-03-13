@@ -1,20 +1,55 @@
-# Environment
-.env
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+MANIFEST
 
-# Output data (jangan commit data dummy yang besar)
-dummy_generator/output/
-
-# Python virtual environment
+# ── Virtual Environments ──────────────────────────────────────────────────────
 .venv/
 venv/
+env/
+ENV/
 
-# IDE
-.vscode/settings.json
+# ── Environment Variables (NEVER commit .env with real credentials) ───────────
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ── Testing & Coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Docker volumes
-postgres_data/
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+*.pid
+
+# ── Database ──────────────────────────────────────────────────────────────────
+*.db
+*.sqlite3
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Alembic (exclude compiled migration files) ────────────────────────────────
+database/migrations/versions/*.pyc

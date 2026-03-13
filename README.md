@@ -1,683 +1,742 @@
-# Cyber Risk Scoring Engine — Proof of Concept
+# Dynamic Cyber Risk Scoring Engine
+
+### Berbasis Telemetri Wazuh | Studi Kasus Simulasi Perbankan Daerah
+
+> Capstone Project Kolaborasi Industri – ITS 2026
+
+---
 
 ## Daftar Isi
 
 1. [Gambaran Umum](#1-gambaran-umum)
 2. [Arsitektur Sistem](#2-arsitektur-sistem)
-3. [Struktur Direktori](#3-struktur-direktori)
-4. [Prasyarat](#4-prasyarat)
-5. [Konfigurasi Awal](#5-konfigurasi-awal)
-6. [Cara Menjalankan](#6-cara-menjalankan)
-7. [Data Contract (Skema Event)](#7-data-contract-skema-event)
-8. [Katalog Skenario Data Dummy](#8-katalog-skenario-data-dummy)
-9. [Referensi Modul Python](#9-referensi-modul-python)
-10. [Skema Database](#10-skema-database)
-11. [Menjalankan Unit Test](#11-menjalankan-unit-test)
-12. [Panduan Kontribusi Kode](#12-panduan-kontribusi-kode)
-13. [Troubleshooting](#13-troubleshooting)
+3. [Formula Risk Scoring](#3-formula-risk-scoring)
+4. [Struktur Proyek](#4-struktur-proyek)
+5. [Tech Stack](#5-tech-stack)
+6. [Setup & Instalasi](#6-setup--instalasi)
+7. [Konfigurasi](#7-konfigurasi)
+8. [Menjalankan Sistem](#8-menjalankan-sistem)
+9. [API Reference](#9-api-reference)
+10. [Sprint Plan & Roadmap](#10-sprint-plan--roadmap)
+11. [Penjelasan Komponen Detail](#11-penjelasan-komponen-detail)
+12. [Simulasi & Testing](#12-simulasi--testing)
+13. [Koneksi ke Wazuh](#13-koneksi-ke-wazuh)
 
 ---
 
 ## 1. Gambaran Umum
 
-Proyek ini adalah simulasi **Dynamic Cyber Risk Scoring Engine** berbasis telemetri Wazuh untuk lingkungan perbankan. Tujuannya adalah membangun Proof of Concept (PoC) yang dapat mendemonstrasikan kepada manajemen bahwa:
+Proyek ini membangun **Proof of Concept (PoC)** sebuah _Risk Scoring Engine_ yang mengubah telemetri teknis dari Wazuh (alert, log, data kerentanan) menjadi **skor risiko 0–100** per aset yang dapat dipahami oleh manajemen eksekutif perbankan.
 
-- Risk score sebuah aset dapat dihitung secara dinamis berdasarkan telemetri keamanan nyata.
-- Sistem dapat mendeteksi lonjakan insiden (_spike_), klaster kerentanan (_vuln cluster_), dan penurunan risiko pasca-remediasi (_decay_).
-- Seluruh pipeline — dari generasi data dummy hingga penyimpanan ke database — dapat dijalankan dan divalidasi secara otomatis.
+### Inti Permasalahan
 
-**Batasan PoC:** Semua data adalah simulasi. Tidak ada koneksi ke sistem Wazuh produksi maupun data nasabah nyata.
+| Tantangan SOC                                           | Kebutuhan Manajemen                       |
+| ------------------------------------------------------- | ----------------------------------------- |
+| Volume alert sangat tinggi, sulit diprioritaskan manual | Prioritas mitigasi berbasis risiko nyata  |
+| Bahasa teknis sulit dipahami non-teknis                 | Pemantauan tren risiko secara periodik    |
+| Tidak ada scoring risiko terpadu per aset               | Ringkasan eksekutif untuk keputusan cepat |
+
+### Output Utama
+
+- ✅ **Skor Risiko Dinamis** per aset (0–100), diperbarui periodik
+- ✅ **Dashboard Eksekutif** dengan ranking aset, tren, dan drill-down penyebab skor
+- ✅ **Simulasi Spike & Remediation** — skor naik saat serangan, turun saat aman
+- ✅ **Model Transparan** — setiap skor bisa dijelaskan faktor pembentuknya
 
 ---
 
 ## 2. Arsitektur Sistem
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                          Developer Machine                        │
-│                                                                    │
-│  ┌─────────────────────┐        ┌──────────────────────────────┐  │
-│  │   dummy_generator/  │        │        ingestor/              │  │
-│  │                     │        │                              │  │
-│  │  generate_all.py    │──JSON──▶  main.py                    │  │
-│  │  (4 worker proses)  │  files │  (validasi + bulk insert)   │  │
-│  │                     │        │                              │  │
-│  │  scenarios/         │        │  db.py                      │  │
-│  │  ├── normal.py      │        │  (DAL + Data Contract)      │  │
-│  │  ├── spike.py       │        └──────────────┬───────────────┘  │
-│  │  ├── vuln.py        │                       │                  │
-│  │  └── decay.py       │                       │ psycopg2         │
-│  └─────────────────────┘                       │ execute_values   │
-│                                                 ▼                  │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │              Docker Compose                                  │  │
-│  │                                                              │  │
-│  │  ┌──────────────────────────┐  ┌──────────────────────────┐ │  │
-│  │  │  postgres:17-alpine      │  │  pgAdmin 4               │ │  │
-│  │  │  container: risk_scoring_db│  │  http://localhost:5050   │ │  │
-│  │  │  port: 5432              │  │  port: 5050              │ │  │
-│  │  │                          │  │                          │ │  │
-│  │  │  • assets                │  │  admin@risk.com          │ │  │
-│  │  │  • wazuh_events          │  │  password: admin123      │ │  │
-│  │  │  • risk_scores           │  │                          │ │  │
-│  │  └──────────────────────────┘  └──────────────────────────┘ │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-**Alur data:**
-
-```
-generate_all.py
-    │  (spawn workers paralel)
-    ├── NormalScenario   ──▶  output/events_normal.json
-    ├── SpikeScenario    ──▶  output/events_spike.json
-    ├── VulnClusterScen  ──▶  output/events_vuln_cluster.json
-    └── DecayScenario    ──▶  output/events_remediation_decay.json
-                                          │
-                                    seed.sh / main.py
-                                          │
-                                 validate (Data Contract)
-                                          │
-                              bulk insert → PostgreSQL
+┌─────────────────────────────────────────────────────────────┐
+│                    WAZUH INFRASTRUCTURE                       │
+│  Wazuh Manager ──► Wazuh Indexer (OpenSearch)               │
+│  https://20.194.14.146  │  https://20.194.14.146:9200        │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ REST API / Polling (per jam)
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  DATA INGESTION LAYER (Python)                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │ Alert Fetcher│  │ SCA Fetcher  │  │ Asset Criticality│  │
+│  │ (Threat/T)   │  │ (Vuln/V)     │  │ (Impact/I)       │  │
+│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │
+└─────────┼─────────────────┼───────────────────┼─────────────┘
+          │                 │                   │
+          ▼                 ▼                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  RISK SCORING ENGINE (Python)                 │
+│  T = Σ(alert × weight) + (T_prev × 0.5)  [Time Decay]       │
+│  V = 100 – SCA_Pass%                                          │
+│  I = Likert_Score / 5.0                                       │
+│  R = I × (0.3×V + 0.7×T)   [cap: 0–100]                     │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ Write time-series
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│               DATABASE (PostgreSQL / TimescaleDB)             │
+│  Table: assets | risk_scores | alert_snapshots | sca_scores  │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ Query
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│              DASHBOARD (Streamlit / Next.js)                  │
+│  - Top Risk Assets Ranking                                    │
+│  - Risk Trend Chart (time-series)                            │
+│  - Drill-down: Breakdown T / V / I per aset                  │
+│  - Simulasi Spike & Remediation                              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Struktur Direktori
+## 3. Formula Risk Scoring
+
+### Formula Utama
 
 ```
-Capstone/
-├── docker-compose.yml          # Infrastruktur: PostgreSQL + pgAdmin
-├── .env.example                # Template variabel environment
-├── README.md                   # Dokumentasi ini
-│
-├── db/
-│   └── init.sql                # DDL: CREATE TABLE assets, wazuh_events, risk_scores
-│
-├── dummy_generator/            # Modul generasi data simulasi
-│   ├── assets.json             # Katalog 15 aset bank (CMDB dummy)
-│   ├── constants.py            # Rule catalog Wazuh + Data Contract constants
-│   ├── base_generator.py       # Abstract base class semua generator
-│   ├── generate_all.py         # Entry point (parallel ProcessPoolExecutor)
-│   ├── scenarios/
-│   │   ├── normal.py           # Skenario 1: Aktivitas harian normal
-│   │   ├── spike.py            # Skenario 2: Lonjakan insiden mendadak
-│   │   ├── vuln.py             # Skenario 3: Klaster CVE pada beberapa aset
-│   │   └── decay.py            # Skenario 4: Penurunan risiko pasca-remediasi
-│   ├── output/                 # File JSON hasil generate (di-gitignore produksi)
-│   │   ├── events_normal.json
-│   │   ├── events_spike.json
-│   │   ├── events_vuln_cluster.json
-│   │   └── events_remediation_decay.json
-│   └── tests/
-│       └── test_base_generator.py  # 61 unit test (pytest)
-│
-├── ingestor/
-│   ├── db.py                   # Data Access Layer: validasi + bulk insert
-│   ├── main.py                 # Service ingesti: baca JSON → insert PostgreSQL
-│   ├── requirements.txt        # Dependensi Python
-│   └── Dockerfile              # Container image ingestor
-│
-└── script/
-    └── seed.sh                 # Otomatisasi end-to-end: generate → validate → insert
+R = I × (w1 × V + w2 × T)
+```
+
+Di mana:
+
+- **R** = Risk Score Final (0–100)
+- **I** = Asset Impact/Criticality (0.0 – 1.0)
+- **V** = Vulnerability Score (0–100)
+- **T** = Dynamic Threat Score (0–100)
+- **w1** = 0.3 (bobot kerentanan/SCA)
+- **w2** = 0.7 (bobot ancaman aktif/alert)
+
+---
+
+### 3.1 Impact / Asset Criticality (I)
+
+Sumber: **Kuesioner Likert (1–5)** yang diisi manajemen berdasarkan Balanced Scorecard.
+
+```
+I = Likert_Score / 5.0
+```
+
+| Likert | Keterangan                                   | I   |
+| ------ | -------------------------------------------- | --- |
+| 1      | Sangat tidak penting (misal: PC resepsionis) | 0.2 |
+| 2      | Tidak penting                                | 0.4 |
+| 3      | Sedang                                       | 0.6 |
+| 4      | Penting                                      | 0.8 |
+| 5      | Sangat kritis (misal: Server DB Nasabah)     | 1.0 |
+
+**8 Pertanyaan Kuesioner** (skala Likert 1–5, rata-rata = skor final):
+
+- **Perspektif Keuangan**: Q1 (downtime → kerugian langsung), Q2 (memproses transaksi besar)
+- **Perspektif Pelanggan**: Q3 (kebocoran data → reputasi), Q4 (titik kontak utama layanan)
+- **Perspektif Proses Internal**: Q5 (esensial operasional harian), Q6 (tidak ada backup manual)
+- **Perspektif Kepatuhan**: Q7 (data pribadi nasabah / regulasi OJK), Q8 (risiko sanksi hukum)
+
+```python
+# Implementasi
+def calculate_impact(questionnaire_answers: list[int]) -> float:
+    """
+    questionnaire_answers: list of 8 integers, each 1–5
+    returns: float between 0.2 and 1.0
+    """
+    avg_likert = sum(questionnaire_answers) / len(questionnaire_answers)
+    return avg_likert / 5.0
 ```
 
 ---
 
-## 4. Prasyarat
+### 3.2 Vulnerability Score (V)
 
-| Kebutuhan       | Versi Minimum | Keterangan                      |
-| --------------- | ------------- | ------------------------------- |
-| Python          | 3.10+         | Direkomendasikan 3.12           |
-| Docker          | 20.10+        | Untuk menjalankan PostgreSQL    |
-| Docker Compose  | 2.x           | Tersedia bersama Docker Desktop |
-| psycopg2-binary | 2.9+          | Tersedia via `requirements.txt` |
+Sumber: **Wazuh SCA (Security Configuration Assessment)** — Modul audit CIS Benchmark.
 
-Pastikan Docker daemon berjalan sebelum melanjutkan.
+```
+V = 100 - SCA_Pass_Percentage
+```
+
+**Logika**: SCA Score Wazuh = 100% → sistem sangat aman → V = 0 (tidak rentan).
+
+```python
+# Implementasi
+def calculate_vulnerability(sca_pass_percentage: float) -> float:
+    """
+    sca_pass_percentage: float 0–100 (dari Wazuh SCA)
+    returns: float 0–100 (semakin tinggi = semakin rentan)
+    """
+    return 100.0 - sca_pass_percentage
+
+# Contoh: 191 checks, 56 passed, 87 failed
+# SCA Score = (56 / (56+87)) * 100 = 39.16%
+# V = 100 - 39.16 = 60.84
+```
 
 ---
 
-## 5. Konfigurasi Awal
+### 3.3 Dynamic Threat Score (T)
 
-### 5.1 Salin dan isi file `.env`
+Sumber: **Wazuh Alerts** via API/Indexer. Dihitung per periode (misal: setiap 1 jam atau 4 jam).
+
+**Bobot Level Alert:**
+| Level Wazuh | Kategori | Bobot |
+|---|---|---|
+| 0 – 4 | Rendah (noise, login sukses, error kecil) | 1 |
+| 5 – 7 | Menengah (error user, bad word match) | 5 |
+| 8 – 11 | Tinggi (brute force, first time seen, integrity warning) | 10 |
+| 12 – 15 | Kritikal (serangan nyata, malware, rootkit) | 25 |
+
+**Formula T dengan Time Decay:**
+
+```
+T_new   = (count_L1-4 × 1) + (count_L5-7 × 5) + (count_L8-11 × 10) + (count_L12-15 × 25)
+T_now   = min(T_new + (T_prev × 0.5), 100)
+```
+
+- **decay factor (α) = 0.5**: dampak serangan 1 periode lalu tersisa 50%, terus menyusut jika tidak ada serangan baru
+- **Cap 100**: T tidak melebihi 100
+
+```python
+# Implementasi
+ALERT_WEIGHTS = {
+    "low":      {"range": (0, 4),   "weight": 1},
+    "medium":   {"range": (5, 7),   "weight": 5},
+    "high":     {"range": (8, 11),  "weight": 10},
+    "critical": {"range": (12, 15), "weight": 25},
+}
+DECAY_FACTOR = 0.5
+
+def calculate_threat_score(alert_counts: dict, t_previous: float) -> float:
+    """
+    alert_counts: {"low": int, "medium": int, "high": int, "critical": int}
+    t_previous: float — T score dari periode sebelumnya
+    returns: float 0–100
+    """
+    t_new = (
+        alert_counts.get("low", 0) * 1 +
+        alert_counts.get("medium", 0) * 5 +
+        alert_counts.get("high", 0) * 10 +
+        alert_counts.get("critical", 0) * 25
+    )
+    t_now = t_new + (t_previous * DECAY_FACTOR)
+    return min(t_now, 100.0)
+```
+
+---
+
+### 3.4 Final Risk Score (R)
+
+```python
+def calculate_risk_score(I: float, V: float, T: float,
+                          w1: float = 0.3, w2: float = 0.7) -> float:
+    """
+    I: 0.0–1.0, V: 0–100, T: 0–100
+    returns: R in 0–100
+    """
+    R = I * (w1 * V + w2 * T)
+    return round(min(max(R, 0), 100), 2)
+```
+
+---
+
+### 3.5 Severity Thresholds (Adaptasi CVSS v3.1)
+
+| Level    | Skor     | CVSS Equivalen | Warna Dashboard |
+| -------- | -------- | -------------- | --------------- |
+| Low      | 0 – 39   | 0.0 – 3.9      | 🟢 Hijau        |
+| Medium   | 40 – 69  | 4.0 – 6.9      | 🟡 Kuning       |
+| High     | 70 – 89  | 7.0 – 8.9      | 🟠 Oranye       |
+| Critical | 90 – 100 | 9.0 – 10.0     | 🔴 Merah        |
+
+---
+
+## 4. Struktur Proyek
+
+```
+capstone/
+├── README.md
+├── .env.example                  # Template environment variables
+├── docker-compose.yml            # Orchestrasi semua service
+├── docs/
+│   ├── Prototype Formulasi Risk Scoring.txt
+│   └── Pengembangan-Dynamic-Cyber-Risk-Scoring-Engine-Berbasis-Telemetri-Wazuh.txt
+│
+├── ingestion/                    # Data ingestion layer
+│   ├── __init__.py
+│   ├── wazuh_client.py           # HTTP client ke Wazuh API & Indexer
+│   ├── alert_fetcher.py          # Tarik & klasifikasi alert per periode
+│   ├── sca_fetcher.py            # Tarik SCA score per agent
+│   └── asset_registry.py        # CMDB dummy — daftar aset + Likert score
+│
+├── engine/                       # Risk Scoring Engine (core logic)
+│   ├── __init__.py
+│   ├── scoring.py                # Formula R, I, V, T
+│   ├── time_decay.py             # Time decay logic & state management
+│   ├── normalizer.py             # Normalisasi & capping nilai
+│   └── scheduler.py             # APScheduler — jalankan scoring tiap N jam
+│
+├── database/                     # Database layer
+│   ├── models.py                 # SQLAlchemy models
+│   ├── migrations/               # Alembic migrations
+│   │   └── versions/
+│   └── queries.py               # Query helpers (get latest score, trend, dll)
+│
+├── api/                          # REST API (FastAPI)
+│   ├── __init__.py
+│   ├── main.py                   # FastAPI app entry point
+│   ├── routes/
+│   │   ├── assets.py            # GET /assets, POST /assets
+│   │   ├── scores.py            # GET /scores/{asset_id}, GET /scores/latest
+│   │   ├── trends.py            # GET /trends/{asset_id}?period=7d
+│   │   └── simulate.py         # POST /simulate/spike, POST /simulate/remediation
+│   └── schemas.py               # Pydantic schemas (request/response)
+│
+├── dashboard/                    # Frontend Dashboard
+│
+└── tests/
+    ├── test_scoring.py           # Unit test formula R, I, V, T
+    ├── test_time_decay.py        # Test time decay logic
+    ├── test_ingestion.py         # Test fetcher (mock Wazuh API)
+    └── test_api.py               # Integration test REST API
+```
+
+---
+
+## 5. Tech Stack
+
+| Layer           | Teknologi               | Keterangan                    |
+| --------------- | ----------------------- | ----------------------------- |
+| **Risk Engine** | Python 3.11+            | Core kalkulasi scoring        |
+| **Scheduler**   | APScheduler             | Cron job polling Wazuh        |
+| **API**         | FastAPI + Uvicorn       | REST API untuk dashboard      |
+| **Database**    | PostgreSQL + SQLAlchemy | Penyimpanan time-series score |
+| **Migrations**  | Alembic                 | Schema versioning             |
+| **Dashboard**   |                         |                               |
+| **Charts**      | Plotly / Altair         | Grafik interaktif             |
+| **Container**   | Docker + Docker Compose | Environment consistency       |
+| **Wazuh**       | Wazuh 4.x + OpenSearch  | Sumber telemetri utama        |
+| **HTTP Client** | httpx (async)           | Koneksi ke Wazuh API          |
+| **Testing**     | pytest + pytest-asyncio | Unit & integration tests      |
+| **Env Config**  | python-dotenv           | Manajemen secrets             |
+
+---
+
+## 6. Setup & Instalasi
+
+### Prasyarat
+
+- Python 3.11+
+- Docker & Docker Compose
+- Akses ke Wazuh Lab (Manager API + Indexer)
+- Git
+
+### Langkah 1: Clone & masuk ke direktori proyek
 
 ```bash
-cp .env.example .env
+git clone <repo-url>
+cd capstone
 ```
 
-Isi default sudah cukup untuk environment lokal:
-
-```ini
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=risk_scoring
-POSTGRES_USER=admin
-POSTGRES_PASSWORD=admin
-```
-
-> **Keamanan:** Jangan pernah commit file `.env` ke repositori. File ini sudah terdaftar di `.gitignore`.
-
-### 5.2 Buat virtual environment Python
+### Langkah 2: Setup Virtual Environment
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate          # Linux / macOS
-# .venv\Scripts\activate           # Windows
-pip install -r ingestor/requirements.txt
-pip install pytest                 # Untuk menjalankan unit test
+source .venv/bin/activate          # Linux/Mac
+# .venv\Scripts\activate            # Windows
+
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### 5.3 Jalankan infrastruktur database
+### Langkah 3: Konfigurasi Environment Variables
 
 ```bash
-docker compose up -d
+cp .env.example .env
+# Edit .env dengan nilai yang sesuai (lihat bagian Konfigurasi)
+nano .env
 ```
 
-Container `risk_scoring_db` akan otomatis menjalankan `db/init.sql` saat pertama kali dinyalakan, membuat semua tabel yang dibutuhkan.
-
----
-
-## 6. Cara Menjalankan
-
-### Cara Cepat — Satu Perintah (Direkomendasikan)
+### Langkah 4: Jalankan via Docker Compose (Rekomendasi)
 
 ```bash
-bash script/seed.sh
+docker-compose up -d
+# Service yang akan berjalan:
+# - postgres:5432
+# - risk-engine (scheduler)
+# - api:8000
+# - dashboard:8501
 ```
 
-Skrip ini menangani seluruh pipeline:
-
-1. Verifikasi prasyarat (Docker, `.env`, Python)
-2. Menunggu PostgreSQL healthy
-3. Generate semua data dummy (4 skenario)
-4. Validasi Data Contract pada setiap file JSON
-5. Bulk insert ke PostgreSQL
-6. Laporan akhir di terminal
-
-**Opsi tambahan `seed.sh`:**
+### Langkah 5: Jalankan Migrasi Database
 
 ```bash
-bash script/seed.sh --skip-generate   # Gunakan file JSON yang sudah ada
-bash script/seed.sh --dry-run         # Generate + validasi, tapi jangan insert ke DB
+# Pastikan PostgreSQL sudah running
+alembic upgrade head
 ```
 
----
-
-### Menjalankan Generator Secara Manual
+### Langkah 6: Verifikasi Instalasi
 
 ```bash
-cd dummy_generator
+# Cek API
+curl http://localhost:8000/health
 
-# Generate semua skenario secara paralel (default)
-python3 generate_all.py
-
-# Generate satu skenario tertentu
-python3 generate_all.py --scenario spike
-
-# Kontrol jumlah worker proses
-python3 generate_all.py --workers 2
-
-# Hanya tampilkan statistik tanpa menyimpan file
-python3 generate_all.py --dry-run
-
-# Generate + langsung insert ke DB
-python3 generate_all.py --seed-db
+# Buka dashboard
+open http://localhost:8501
 ```
 
-### Menjalankan Ingestor Secara Manual
+---
+
+## 7. Konfigurasi
+
+Salin `.env.example` ke `.env` dan isi nilai berikut:
+
+```env
+# === WAZUH CONNECTION ===
+WAZUH_API_URL=https://20.194.14.146
+WAZUH_INDEXER_URL=https://20.194.14.146:9200
+WAZUH_API_USER=wazuh
+WAZUH_API_PASSWORD=<your_password>
+WAZUH_VERIFY_SSL=false          # Set true jika sertifikat valid
+
+# === DATABASE ===
+DATABASE_URL=postgresql://capstone:capstone@localhost:5432/risk_scoring
+
+# === SCORING ENGINE ===
+SCORING_INTERVAL_HOURS=1        # Seberapa sering scoring dihitung (default: 1 jam)
+ALERT_LOOKBACK_HOURS=1          # Window waktu pengambilan alert Wazuh
+DECAY_FACTOR=0.5                # Alpha untuk time decay (0.0–1.0)
+WEIGHT_VULNERABILITY=0.3        # w1: bobot SCA/CIS
+WEIGHT_THREAT=0.7               # w2: bobot alert aktif
+
+# === API ===
+API_HOST=0.0.0.0
+API_PORT=8000
+API_SECRET_KEY=<random-secret>  # Untuk JWT jika diperlukan
+
+# === DASHBOARD ===
+DASHBOARD_API_URL=http://localhost:8000
+```
+
+---
+
+## 8. Menjalankan Sistem
+
+### Mode Development (Tanpa Docker)
 
 ```bash
-cd ingestor
+# Terminal 1: Jalankan PostgreSQL
+docker-compose up postgres -d
 
-# Insert semua file dari folder output default
-python3 main.py
+# Terminal 2: Jalankan Risk Engine Scheduler
+cd engine
+python scheduler.py
 
-# Tentukan folder input secara eksplisit
-python3 main.py --input-dir ../dummy_generator/output
+# Terminal 3: Jalankan API
+cd api
+uvicorn main:app --reload --port 8000
 
-# Jalankan query validasi setelah insert
-python3 main.py --validate
+# Terminal 4: Jalankan Dashboard
+cd dashboard
+streamlit run app.py --server.port 8501
 ```
 
----
-
-## 7. Data Contract (Skema Event)
-
-Setiap objek JSON yang masuk ke sistem **wajib** memenuhi kontrak berikut. Pelanggaran akan ditolak oleh `ingestor/db.py` sebelum menyentuh database.
-
-| Field        | Tipe      | Nilai yang Diizinkan                            | Keterangan                                 |
-| ------------ | --------- | ----------------------------------------------- | ------------------------------------------ |
-| `timestamp`  | `string`  | Format ISO-8601                                 | Contoh: `2026-03-12T08:30:00+07:00`        |
-| `asset_id`   | `string`  | Non-kosong                                      | Merujuk ke `assets.asset_id`               |
-| `severity`   | `integer` | `1` – `15`                                      | Skala standar Wazuh (lihat tabel di bawah) |
-| `category`   | `string`  | `auth` \| `malware` \| `integrity` \| `network` | Kategori rule Wazuh                        |
-| `event_type` | `string`  | `alert` \| `vuln` \| `control`                  | Jenis event                                |
-
-**Field tambahan (opsional, tidak diwajibkan oleh contract):**
-
-| Field              | Keterangan                                           |
-| ------------------ | ---------------------------------------------------- |
-| `hostname`         | Nama host aset                                       |
-| `rule_id`          | ID rule Wazuh atau VULN-xxx                          |
-| `rule_description` | Deskripsi rule                                       |
-| `cve_id`           | Diisi jika `event_type = vuln`                       |
-| `cvss_score`       | Skor CVSS (0.0–10.0), diisi jika `event_type = vuln` |
-| `scenario`         | Label skenario generator                             |
-
-**Skala Severity Wazuh:**
-
-| Rentang | Level         | Contoh                                   |
-| ------- | ------------- | ---------------------------------------- |
-| 1–3     | Informational | Login sukses                             |
-| 4–6     | Low           | Login gagal, file ditambah               |
-| 7–10    | Medium        | Port scan, checksum berubah              |
-| 11–13   | High          | Brute force, suspicious traffic          |
-| 14–15   | Critical      | Malware, ransomware, rootkit, CVE kritis |
-
----
-
-## 8. Katalog Skenario Data Dummy
-
-### Skenario 1 — Normal (`events_normal.json`)
-
-Mensimulasikan **aktivitas harian bank tanpa anomali** selama 7 hari.
-
-| Parameter        | Nilai                                         |
-| ---------------- | --------------------------------------------- |
-| Volume           | 60–120 events/hari                            |
-| Severity dominan | 1–6 (informational/low)                       |
-| Category dominan | `auth` (login success/fail rutin)             |
-| Event type       | Hanya `alert`                                 |
-| Tujuan           | Membangun baseline risk score rendah (~10–30) |
-
-**Distribusi jam:** Puncak di 08:00–17:00 WIB sesuai jam kerja bank. Sangat sepi di dini hari.
-
----
-
-### Skenario 2 — Spike (`events_spike.json`)
-
-Mensimulasikan **insiden keamanan mendadak** selama 3 hari.
-
-| Parameter        | Nilai                                         |
-| ---------------- | --------------------------------------------- |
-| Duration         | 3 hari (1 normal + 1 spike + 1 aftermath)     |
-| Volume spike     | 200–400 events dalam 2–3 jam (8–15× baseline) |
-| Severity dominan | 10–14 (brute force, port scan, malware)       |
-| Target aset      | 1–2 aset kritis (pilihan acak)                |
-| Tujuan           | Membuktikan risk score melonjak terdeteksi    |
-
-**Timeline:**
-
-- **Hari 1:** Normal baseline (~80 events)
-- **Hari 2:** Spike di jam 10:00–14:00 pada target aset; 85% traffic fokus ke target, 15% simulating lateral movement
-- **Hari 3:** Aftermath — residual anomali, severity mulai turun
-
----
-
-### Skenario 3 — Vulnerability Cluster (`events_vuln_cluster.json`)
-
-Mensimulasikan **hasil vulnerability scan** yang menemukan CVE pada 3–5 aset selama 5 hari.
-
-| Parameter       | Nilai                                                       |
-| --------------- | ----------------------------------------------------------- |
-| Aset vulnerable | 3–5 aset (pilih acak dari semua tipe)                       |
-| CVE per aset    | 1–3 CVE (prioritas CVSS ≥ 7.0 untuk aset kritis)            |
-| Jam scan        | Dini hari 01:00–03:00 atau malam 19:00–21:00                |
-| Event type      | Campuran `vuln` (scan results) + `alert` (integrity events) |
-| Tujuan          | Menguji kenaikan `vuln_score` pada aset yang belum di-patch |
-
-**Ab hari ke-2:** Ditambahkan integrity alerts (file berubah) sebagai penanda potensi eksploitasi.
-
----
-
-### Skenario 4 — Remediation Decay (`events_remediation_decay.json`)
-
-Mensimulasikan **penurunan bertahap risk score** setelah tim SOC melakukan remediasi, selama 5 hari.
-
-| Hari | Fase                                    | Volume            | Max Severity |
-| ---- | --------------------------------------- | ----------------- | ------------ |
-| 0    | Post-spike: kondisi darurat             | 200 events (100%) | 15           |
-| 1    | SOC Response: investigasi & containment | 120 events (60%)  | 12           |
-| 2    | Patch deployed: CVE diselesaikan        | 60 events (30%)   | 9            |
-| 3    | Enhanced monitoring: residual rendah    | 30 events (15%)   | 7            |
-| 4    | Normalized: kembali ke baseline         | 10 events (5%)    | 5            |
-
-> Skenario ini adalah yang **paling penting untuk demo ke manajemen** karena memperlihatkan bahwa investasi remediasi secara kasat mata menurunkan risk score pada dashboard.
-
----
-
-## 9. Referensi Modul Python
-
-### `dummy_generator/constants.py`
-
-Sumber kebenaran tunggal untuk semua nilai konstanta. **Jangan hardcode nilai ini di tempat lain.**
-
-```python
-from constants import (
-    RULES,               # Dict[rule_id, {description, severity, category, event_type}]
-    CVE_CATALOG,         # List[{cve_id, cvss_score, product}]
-    VALID_CATEGORIES,    # frozenset — {'auth', 'malware', 'integrity', 'network'}
-    VALID_EVENT_TYPES,   # frozenset — {'alert', 'vuln', 'control'}
-    SCENARIO_NORMAL,     # "normal"
-    SCENARIO_SPIKE,      # "spike"
-    SCENARIO_VULN,       # "vuln_cluster"
-    SCENARIO_DECAY,      # "remediation_decay"
-)
-```
-
----
-
-### `dummy_generator/base_generator.py` — Kelas `BaseGenerator`
-
-Abstract base class yang diwarisi semua skenario. Menyediakan utility bersama.
-
-| Method                                                             | Keterangan                                                 |
-| ------------------------------------------------------------------ | ---------------------------------------------------------- |
-| `_load_assets()`                                                   | Membaca `assets.json` dan mengembalikan list asset         |
-| `_get_asset(asset_id)`                                             | Mengembalikan satu asset. Jika `asset_id=None`, pilih acak |
-| `_get_assets_by_type(type)`                                        | Filter asset berdasarkan `asset_type`                      |
-| `_get_assets_by_criticality(level)`                                | Filter asset berdasarkan level kritisitas                  |
-| `_build_alert_event(asset, rule_id, timestamp, override_severity)` | Bangun satu event alert dari rule catalog                  |
-| `_build_vuln_event(asset, cve, timestamp)`                         | Bangun satu event vulnerability dari CVE catalog           |
-| `_random_cve(min_cvss)`                                            | Pilih CVE acak dengan skor CVSS minimal                    |
-| `save(events)`                                                     | Simpan list events ke file JSON di `output/`               |
-| `run()`                                                            | Shortcut: `generate_events()` → `save()`                   |
-
-**Wajib diimplementasi subclass:**
-
-```python
-@property
-@abstractmethod
-def scenario_name(self) -> str: ...   # label skenario, e.g. "spike"
-
-@abstractmethod
-def generate_events(self) -> list[dict]: ...  # logic generasi event
-```
-
----
-
-### `ingestor/db.py` — Data Access Layer
-
-Modul ini adalah satu-satunya titik akses ke database. Jangan menulis SQL secara langsung di modul lain.
-
-**Fungsi publik:**
-
-| Fungsi                                                            | Keterangan                                                                          |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `build_engine()`                                                  | Buat SQLAlchemy Engine dari variabel `.env`                                         |
-| `ping(engine)`                                                    | Uji koneksi, kembalikan versi PostgreSQL                                            |
-| `validate_events(events)`                                         | Validasi list event terhadap Data Contract. Kembalikan `(valid_list, error_list)`   |
-| `bulk_insert_events(engine, events, batch_size, skip_validation)` | Bulk insert menggunakan `psycopg2.extras.execute_values`. Kembalikan dict statistik |
-| `bulk_insert_assets(engine, assets)`                              | Insert asset CMDB, skip jika duplikat                                               |
-
-**Exception kustom:**
-
-```python
-class SchemaValidationError(ValueError):
-    event_index: int   # posisi event di input list (0-based)
-    field: str         # nama field yang melanggar
-    reason: str        # penjelasan pelanggaran
-    raw_value: Any     # nilai aktual yang diterima
-```
-
-**Contoh penggunaan:**
-
-```python
-from ingestor.db import build_engine, validate_events, bulk_insert_events
-
-engine = build_engine()
-valid, errors = validate_events(raw_events)
-
-if errors:
-    for err in errors:
-        logger.warning("Skema rusak: %s", err)
-
-result = bulk_insert_events(engine, valid)
-print(result)
-# {'total': 707, 'inserted': 707, 'skipped_invalid': 0, 'errors': []}
-```
-
----
-
-### `dummy_generator/generate_all.py` — Parallel Entry Point
-
-Menjalankan semua skenario secara paralel menggunakan `ProcessPoolExecutor`.
-
-```
-Proses Utama
-├── Worker PID-A  →  NormalScenario.generate_events()  →  save JSON
-├── Worker PID-B  →  SpikeScenario.generate_events()   →  save JSON
-├── Worker PID-C  →  VulnClusterScenario.generate_events() → save JSON
-└── Worker PID-D  →  DecayScenario.generate_events()   →  save JSON
-```
-
-**Catatan penting:** Karena menggunakan `multiprocessing`, guard `if __name__ == "__main__"` di baris terakhir file sangat penting untuk kompatibilitas Windows. Jangan dihapus.
-
----
-
-## 10. Skema Database
-
-### Tabel `assets` (CMDB)
-
-| Kolom               | Tipe              | Keterangan                                 |
-| ------------------- | ----------------- | ------------------------------------------ |
-| `asset_id`          | `VARCHAR(100) PK` | Identifikasi unik aset                     |
-| `hostname`          | `VARCHAR(100)`    | Nama host                                  |
-| `asset_type`        | `VARCHAR(50)`     | `server` \| `workstation` \| `application` |
-| `criticality`       | `VARCHAR(20)`     | `low` \| `medium` \| `high` \| `critical`  |
-| `criticality_score` | `INTEGER`         | Skor 1–10                                  |
-| `department`        | `VARCHAR(100)`    | Departemen pemilik aset                    |
-| `ip_address`        | `VARCHAR(50)`     | Alamat IP                                  |
-
-**Katalog 15 aset dummy yang tersedia:**
-
-| Asset ID                 | Tipe        | Kritisitas      | Departemen        |
-| ------------------------ | ----------- | --------------- | ----------------- |
-| `srv-core-banking-01/02` | server      | critical        | Core Banking      |
-| `srv-database-01/02`     | server      | critical / high | IT Infrastructure |
-| `srv-web-banking-01`     | server      | high            | Digital Banking   |
-| `app-mobile-banking`     | application | critical        | Digital Banking   |
-| `app-internet-banking`   | application | critical        | Digital Banking   |
-| `ws-teller-01/02/03`     | workstation | high            | Teller            |
-| `ws-ops-01/02`           | workstation | medium          | Operations        |
-| `srv-backup-01`          | server      | high            | IT Infrastructure |
-| `srv-siem-01`            | server      | high            | Security          |
-| `ws-cso-01`              | workstation | medium          | Security          |
-
----
-
-### Tabel `wazuh_events` (Telemetri Input)
-
-| Kolom        | Tipe           | Constraint                | Keterangan                     |
-| ------------ | -------------- | ------------------------- | ------------------------------ |
-| `id`         | `SERIAL PK`    | —                         | Auto-increment                 |
-| `event_id`   | `UUID`         | default gen_random_uuid() | ID unik event                  |
-| `timestamp`  | `TIMESTAMP`    | NOT NULL                  | Waktu kejadian                 |
-| `asset_id`   | `VARCHAR(100)` | FK → assets               | Aset yang terdampak            |
-| `severity`   | `INTEGER`      | CHECK 1–15                | Level bahaya Wazuh             |
-| `category`   | `VARCHAR(50)`  | —                         | auth/malware/integrity/network |
-| `event_type` | `VARCHAR(50)`  | —                         | alert/vuln/control             |
-| `rule_id`    | `VARCHAR(50)`  | —                         | ID rule Wazuh                  |
-| `cve_id`     | `VARCHAR(50)`  | —                         | Diisi jika event_type=vuln     |
-| `cvss_score` | `NUMERIC(4,1)` | —                         | Diisi jika event_type=vuln     |
-| `scenario`   | `VARCHAR(50)`  | —                         | Label skenario generator       |
-
-**Index yang tersedia:** `asset_id`, `timestamp`, `severity`, `scenario`
-
----
-
-### Tabel `risk_scores` (Output Scoring Engine)
-
-Tabel ini diisi oleh **scoring engine** (komponen berikutnya dalam roadmap). Saat ini didefinisikan sebagai kontrak ke depan.
-
-| Kolom               | Keterangan                               |
-| ------------------- | ---------------------------------------- |
-| `asset_id`          | Aset yang dikalkulasi                    |
-| `risk_score`        | Skor risiko gabungan (0–100)             |
-| `threat_score`      | Sub-skor ancaman aktif                   |
-| `vuln_score`        | Sub-skor dari kerentanan CVE             |
-| `criticality_score` | Sub-skor bobot kritis aset               |
-| `calculated_at`     | Timestamp kalkulasi                      |
-| `window_hours`      | Jendela waktu kalkulasi (default 24 jam) |
-
----
-
-## 11. Menjalankan Unit Test
-
-Suite test terdiri dari **61 test case** yang memvalidasi seluruh layer logic generator.
+### Menjalankan Test
 
 ```bash
-# Dari root proyek
-.venv/bin/python3 -m pytest dummy_generator/tests/ -v
-```
-
-**Output yang diharapkan:**
-
-```
-61 passed in 0.06s
-```
-
-**Kelompok test dan cakupannya:**
-
-| Kelas Test                 | Jumlah | Apa yang Divalidasi                                                      |
-| -------------------------- | ------ | ------------------------------------------------------------------------ |
-| `TestDataContract`         | 20     | 5 invariant Data Contract × 4 skenario (parameterized)                   |
-| `TestBaseGeneratorUtility` | 11     | Method internal `BaseGenerator` (build_event, override_severity, dll)    |
-| `TestNormalScenario`       | 6      | Auth dominan, tidak ada vuln events, severity rendah                     |
-| `TestSpikeScenario`        | 4      | Severity ≥10 minimal 30%, rasio spike/baseline ≥2×                       |
-| `TestVulnClusterScenario`  | 5      | Vuln terkonsentrasi <50% aset, cve_id terisi                             |
-| `TestDecayScenario`        | 5      | Volume dan avg severity menurun harian                                   |
-| `TestSchemaConsistency`    | 6      | Validasi `constants.py` — mencegah bug category 'vulnerability' terulang |
-
-**Menjalankan satu kelompok test tertentu:**
-
-```bash
-# Hanya test Data Contract
-.venv/bin/python3 -m pytest dummy_generator/tests/ -v -k "TestDataContract"
-
-# Hanya test terkait severity
-.venv/bin/python3 -m pytest dummy_generator/tests/ -v -k "severity"
+pytest tests/ -v
+pytest tests/test_scoring.py -v          # Hanya unit test formula
+pytest tests/ --cov=engine --cov-report=html  # Dengan coverage report
 ```
 
 ---
 
-## 12. Panduan Kontribusi Kode
+## 9. API Reference
 
-### Menambah Skenario Baru
+### Base URL: `http://localhost:8000`
 
-1. Buat file baru di `dummy_generator/scenarios/nama_skenario.py`
-2. Buat kelas yang mewarisi `BaseGenerator`
-3. Implementasi `scenario_name` (property) dan `generate_events()` (method)
-4. Daftarkan kelas ke `SCENARIO_REGISTRY` di `generate_all.py`
-5. Tambahkan label ke `constants.py` (e.g. `SCENARIO_NAMA = "nama_skenario"`)
-6. Tulis minimal 4 test case di `test_base_generator.py`
+| Method | Endpoint                | Deskripsi                                          |
+| ------ | ----------------------- | -------------------------------------------------- |
+| GET    | `/health`               | Health check                                       |
+| GET    | `/assets`               | Daftar semua aset terdaftar                        |
+| POST   | `/assets`               | Daftarkan aset baru + submit Likert score          |
+| GET    | `/scores/latest`        | Skor risiko terkini semua aset (ranking)           |
+| GET    | `/scores/{asset_id}`    | Skor terkini + breakdown (T, V, I) satu aset       |
+| GET    | `/trends/{asset_id}`    | Time-series skor aset (query param: `?period=7d`)  |
+| POST   | `/simulate/spike`       | Inject lonjakan alert simulasi ke engine           |
+| POST   | `/simulate/remediation` | Reset T_prev ke 0 (simulasi perbaikan)             |
+| GET    | `/scores/top`           | Top N aset risiko tertinggi (query param: `?n=10`) |
 
-```python
-# Contoh skeleton skenario baru
-from base_generator import BaseGenerator
-from constants import SCENARIO_NAMA   # tambahkan konstanta dulu
+### Contoh Response GET `/scores/{asset_id}`
 
-class NamaScenario(BaseGenerator):
-    scenario_name = SCENARIO_NAMA
-
-    def generate_events(self) -> list[dict]:
-        events = []
-        # ... logic generasi event
-        events.sort(key=lambda e: e["timestamp"])
-        return events
-```
-
-### Menambah Rule Wazuh Baru
-
-Tambahkan entri ke dict `RULES` di `constants.py`. Pastikan:
-
-- `category` adalah salah satu dari `VALID_CATEGORIES`
-- `event_type` adalah salah satu dari `VALID_EVENT_TYPES`
-- `severity` adalah integer antara 1 dan 15
-
-```python
-RULES["new-rule-id"] = {
-    "description": "Deskripsi rule",
-    "severity": 8,
-    "category": "network",    # HARUS salah satu dari VALID_CATEGORIES
-    "event_type": "alert",    # HARUS salah satu dari VALID_EVENT_TYPES
+```json
+{
+  "asset_id": "agent-001",
+  "hostname": "db-server-01",
+  "timestamp": "2026-03-13T08:00:00Z",
+  "risk_score": 72.5,
+  "severity": "High",
+  "breakdown": {
+    "impact": 1.0,
+    "vulnerability": 61.0,
+    "threat": 78.0,
+    "w1": 0.3,
+    "w2": 0.7
+  },
+  "formula": "R = 1.0 × (0.3×61.0 + 0.7×78.0) = 72.9"
 }
 ```
 
-### Aturan Commit
+---
 
-- Jalankan `pytest` sebelum membuat commit. Tidak boleh ada test yang gagal.
-- Jangan hapus atau ubah konstanta `VALID_CATEGORIES` / `VALID_EVENT_TYPES` tanpa mendiskusikan dengan tim terlebih dahulu — perubahan ini berdampak ke seluruh pipeline termasuk constraint database.
+## 10. Sprint Plan & Roadmap
+
+### Sprint 1–2 (Minggu 1–4): Foundation
+
+**Goal**: Data contract terkunci, infrastruktur berjalan, aset terdaftar.
+
+- [ ] Setup repo, Docker Compose, struktur folder
+- [ ] Buat schema database (assets, risk_scores, alert_snapshots, sca_scores)
+- [ ] Jalankan migrasi Alembic awal
+- [ ] Buat `wazuh_client.py` — koneksi ke Wazuh API & Indexer (dengan SSL skip)
+- [ ] Buat `asset_registry.py` — CMDB dummy 5–10 aset dengan Likert score
+- [ ] Buat `alert_fetcher.py` — query alerts per agent per time window
+- [ ] Buat `sca_fetcher.py` — query SCA score per agent
+- [ ] Verifikasi data telemetry live dari Wazuh (Indexer + API)
+- [ ] Tulis unit test dasar untuk fetcher (dengan mock)
+- [ ] **DoD**: Docker `docker-compose up` berjalan, data dummy bisa masuk ke DB
 
 ---
 
-## 13. Troubleshooting
+### Sprint 3–4 (Minggu 5–8): Core Engine
 
-### `Connection refused` saat menjalankan ingestor
+**Goal**: Scoring engine berjalan end-to-end, time-series tersimpan di DB.
 
-**Penyebab:** Container PostgreSQL belum sepenuhnya siap.
+- [ ] Implementasi `scoring.py` — formula R, I, V, T
+- [ ] Implementasi `time_decay.py` — state T_prev per aset, di DB
+- [ ] Implementasi `normalizer.py` — capping, normalisasi output 0–100
+- [ ] Implementasi `scheduler.py` — APScheduler polling tiap 1 jam
+- [ ] Buat FastAPI app + semua routes (assets, scores, trends, simulate)
+- [ ] Buat Pydantic schemas untuk validasi input/output API
+- [ ] Tulis unit test lengkap: `test_scoring.py`, `test_time_decay.py`
+- [ ] Tulis integration test: `test_api.py`
+- [ ] **DoD**: `GET /scores/latest` mengembalikan skor real dengan breakdown T/V/I
 
-```bash
-# Cek status container
-docker compose ps
+---
 
-# Cek apakah PostgreSQL menerima koneksi
-docker exec risk_scoring_db pg_isready -U admin -d risk_scoring
+### Sprint 5 (Minggu 9–10): Dashboard
 
-# Jika container baru dijalankan, tunggu beberapa detik lalu coba lagi
+**Goal**: Dashboard aktif, dapat dibaca manajemen.
+
+- [ ] Setup Streamlit app + multi-page structure
+- [ ] Halaman Executive View: global risk index, top 10 aset risiko
+- [ ] Halaman Asset Detail: breakdown T/V/I per aset, formula transparan
+- [ ] Halaman Risk Trend: line chart time-series per aset
+- [ ] Halaman Simulation: tombol inject spike, lihat skor naik secara live
+- [ ] Buat komponen gauge chart (pewarnaan sesuai severity CVSS)
+- [ ] Pastikan bahasa di dashboard non-teknis / eksekutif-friendly
+- [ ] **DoD**: Demo end-to-end: dari data masuk → skor → grafik terlihat di dashboard
+
+---
+
+### Sprint 6 (Minggu 11–12): Final Demo & Dokumentasi
+
+**Goal**: PoC selesai, simulasi berjalan mulus, dokumentasi lengkap.
+
+- [ ] Jalankan skenario simulasi lengkap (normal → spike → decay → remediation)
+- [ ] Rekam/screenshot semua skenario untuk presentasi
+- [ ] Tulis README final (dokumen ini)
+- [ ] Buat diagram arsitektur sistem
+- [ ] Buat slide presentasi (ringkasan eksekutif)
+- [ ] Pastikan semua test hijau (`pytest tests/`)
+- [ ] Final code review & cleanup
+- [ ] **DoD**: Presentasi akhir kepada mitra industri
+
+---
+
+## 11. Penjelasan Komponen Detail
+
+### 11.1 Wazuh Client (`ingestion/wazuh_client.py`)
+
+Bertanggung jawab untuk semua komunikasi dengan Wazuh.
+
+**Fungsi utama:**
+
+- `authenticate()` → dapatkan JWT token dari Wazuh API
+- `get_alerts(agent_id, from_time, to_time)` → query Wazuh Indexer (OpenSearch) untuk alert dalam rentang waktu
+- `get_sca_summary(agent_id)` → dapatkan SCA pass/fail/not-applicable per agent
+- `get_agents()` → daftar semua agent aktif
+
+**Endpoint Wazuh yang digunakan:**
+
+```
+POST https://20.194.14.146/security/user/authenticate  → Token
+GET  https://20.194.14.146/agents                       → Agent list
+GET  https://20.194.14.146/sca/{agent_id}               → SCA summary
+POST https://20.194.14.146:9200/wazuh-alerts-*/_search → Alert query
+```
+
+**Contoh Query OpenSearch untuk alert per agent:**
+
+```json
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "term": { "agent.id": "001" } },
+        { "range": { "timestamp": { "gte": "now-1h", "lte": "now" } } }
+      ]
+    }
+  },
+  "aggs": {
+    "by_level": {
+      "range": {
+        "field": "rule.level",
+        "ranges": [
+          { "key": "low", "from": 0, "to": 5 },
+          { "key": "medium", "from": 5, "to": 8 },
+          { "key": "high", "from": 8, "to": 12 },
+          { "key": "critical", "from": 12, "to": 16 }
+        ]
+      }
+    }
+  },
+  "size": 0
+}
 ```
 
 ---
 
-### `FATAL: password authentication failed`
+### 11.2 Time Decay State Management
 
-**Penyebab:** Variabel di `.env` tidak cocok dengan konfigurasi container yang sudah ada.
+State `T_prev` per aset **harus disimpan di database** agar persist antar restart.
 
-```bash
-# Hapus volume database lama (DATA AKAN HILANG — aman karena ini data dummy)
-docker compose down -v
-docker compose up -d
+```sql
+-- Tabel untuk menyimpan state T terakhir
+CREATE TABLE threat_state (
+    asset_id    VARCHAR(50) PRIMARY KEY,
+    t_previous  FLOAT       NOT NULL DEFAULT 0.0,
+    updated_at  TIMESTAMP   NOT NULL DEFAULT NOW()
+);
+```
+
+Setiap kali scoring engine berjalan:
+
+1. Baca `T_prev` dari tabel `threat_state`
+2. Hitung `T_now` dengan formula decay
+3. Update `T_prev = T_now` di tabel
+
+---
+
+### 11.3 Database Schema
+
+```sql
+-- Aset terdaftar (CMDB dummy)
+CREATE TABLE assets (
+    asset_id     VARCHAR(50) PRIMARY KEY,
+    hostname     VARCHAR(100) NOT NULL,
+    wazuh_agent_id VARCHAR(10),
+    ip_address   INET,
+    likert_score FLOAT NOT NULL,           -- Rata-rata 8 jawaban kuesioner
+    impact       FLOAT GENERATED ALWAYS AS (likert_score / 5.0) STORED,
+    description  TEXT,
+    created_at   TIMESTAMP DEFAULT NOW()
+);
+
+-- Time-series skor risiko
+CREATE TABLE risk_scores (
+    id           SERIAL PRIMARY KEY,
+    asset_id     VARCHAR(50) REFERENCES assets(asset_id),
+    timestamp    TIMESTAMP NOT NULL,
+    risk_score   FLOAT NOT NULL,
+    severity     VARCHAR(10) NOT NULL,     -- Low/Medium/High/Critical
+    impact       FLOAT NOT NULL,
+    vulnerability FLOAT NOT NULL,
+    threat       FLOAT NOT NULL,
+    t_new        FLOAT NOT NULL,
+    t_previous   FLOAT NOT NULL,
+    sca_pass_pct FLOAT NOT NULL,
+    alert_count_low      INT DEFAULT 0,
+    alert_count_medium   INT DEFAULT 0,
+    alert_count_high     INT DEFAULT 0,
+    alert_count_critical INT DEFAULT 0
+);
+
+-- Index untuk query time-series yang cepat
+CREATE INDEX idx_risk_scores_asset_time ON risk_scores(asset_id, timestamp DESC);
 ```
 
 ---
 
-### Generator berjalan tapi tidak menghasilkan file output
+## 12. Simulasi & Testing
 
-**Penyebab paling umum:** Menjalankan `generate_all.py` dari direktori yang salah.
+### Skenario Simulasi Wajib
 
-```bash
-# Pastikan working directory adalah dummy_generator/
-cd dummy_generator
-python3 generate_all.py
+#### Skenario 1: Normal Traffic
 
-# Atau dari root proyek menggunakan path lengkap
-python3 dummy_generator/generate_all.py
+- Alert: mayoritas Level 3–4 (login sukses, aktivitas normal)
+- Expected: R ≈ 10–25 (Low/Hijau)
+
+#### Skenario 2: Brute Force Spike
+
+- Alert Jam 1: 50× Level 10 (multiple failed login)
+- Expected T_jam1: min(50×10 + 0, 100) = 100
+- Expected R ≈ 70+ (High/Merah)
+
+#### Skenario 3: Time Decay (Serangan Berhenti)
+
+- Alert Jam 2: hanya beberapa Level 3
+- T_baru_jam2 = 10
+- T_sekarang = 10 + (100 × 0.5) = 60
+- Expected R ≈ 40–50 (Medium/Kuning) — skor turun tapi belum aman total
+
+#### Skenario 4: Full Remediation
+
+- Admin klik "Remediation" → T_prev direset ke 0
+- Alert kembali normal
+- Expected R ≈ 10–20 (Low/Hijau) dalam 2–3 periode berikutnya
+
+### Contoh Kalkulasi Lengkap
+
+```
+Server DB Nasabah:
+- Likert Score = 5 → I = 1.0
+- SCA Pass = 39% (56/143 checks) → V = 100 - 39 = 61
+- Alert periode ini: 50× Level 10 (brute force), T_prev = 0
+  T_new = 50 × 10 = 500 → di-cap → T = 100
+- R = 1.0 × (0.3×61 + 0.7×100) = 1.0 × (18.3 + 70) = 88.3
+- Severity: HIGH (mendekati Critical)
 ```
 
 ---
 
-### Test gagal dengan `ImportError`
+## 13. Koneksi ke Wazuh
 
-**Penyebab:** Modul `pytest` belum terinstall di virtual environment.
+### Konfigurasi Koneksi Lab
+
+```
+Wazuh API  : https://20.194.14.146          (port 443/55000)
+Wazuh Indexer (OpenSearch): https://20.194.14.146:9200
+```
+
+> **Catatan Keamanan**: SSL self-signed cert → set `WAZUH_VERIFY_SSL=false` di `.env`  
+> Jangan hardcode credentials. Selalu gunakan environment variables.
+
+### Test Koneksi Manual
 
 ```bash
-source .venv/bin/activate
-.venv/bin/python3 -m pip install pytest
+# Test authentikasi ke Wazuh API
+curl -k -X POST "https://20.194.14.146/security/user/authenticate" \
+     -H "Content-Type: application/json" \
+     -d '{"user": "wazuh", "password": "<password>"}'
+
+# Test query ke Indexer
+curl -k -u admin:<password> \
+     "https://20.194.14.146:9200/wazuh-alerts-4.x-*/_count"
 ```
 
 ---
 
-### `SchemaValidationError: category='vulnerability'`
+## Referensi
 
-**Penyebab:** Entri di `constants.py` menggunakan `category: 'vulnerability'` yang bukan bagian dari Data Contract.
-
-**Solusi:** Periksa `RULES` di `constants.py`. Semua entry harus menggunakan salah satu dari `{'auth', 'malware', 'integrity', 'network'}`. Jalankan test `TestSchemaConsistency` untuk mendeteksi pelanggaran secara otomatis:
-
-```bash
-.venv/bin/python3 -m pytest dummy_generator/tests/ -v -k "TestSchemaConsistency"
-```
-
----
-
-_Dokumen ini dikelola bersama kode sumber. Perbarui bagian yang relevan setiap kali ada perubahan arsitektur atau antarmuka publik._
+- [Wazuh SCA Documentation](https://documentation.wazuh.com/current/user-manual/capabilities/sec-config-assessment/use-cases.html)
+- [Wazuh Rules Classification](https://documentation.wazuh.com/current/user-manual/ruleset/rules-classification.html)
+- [CVSS v3.1 Specification](https://www.first.org/cvss/specification-document)
+- [CIS Benchmarks](https://www.cisecurity.org/cis-benchmarks)
+- [Wazuh API Reference](https://documentation.wazuh.com/current/user-manual/api/reference.html)
