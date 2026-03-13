@@ -34,16 +34,13 @@ Konfigurasi infrastruktur sudah berada pada kondisi yang siap untuk pengembangan
 
 File: [docker-compose.yml](../docker-compose.yml)
 
-Perubahan penting:
-
 1. Service `postgres` menjadi fondasi environment dengan image `postgres:16-alpine`.
 2. Persistensi data database sudah diaktifkan melalui volume `postgres_data`.
 3. Healthcheck menggunakan `pg_isready` untuk memastikan service benar-benar siap sebelum dependensi lain dijalankan.
 4. Service `pgadmin` tersedia lewat profile `dev`, sehingga tidak membebani mode run standar.
 5. Service `risk-engine`, `api`, dan `dashboard` sudah dipersiapkan dalam template komentar sebagai jalur aktivasi Sprint berikutnya.
 
-Nilai profesional dari desain ini:
-
+Nilai dari desain ini:
 1. Maintainability: struktur compose jelas dan mudah diaktifkan bertahap.
 2. Scalability: service extension sudah disiapkan tanpa perlu refactor file besar.
 3. Reliability: healthcheck mencegah race condition saat startup stack.
@@ -148,8 +145,9 @@ Parameter minimum yang wajib benar:
 Catatan penting endpoint Wazuh:
 
 1. Alert telemetry dibaca dari `WAZUH_INDEXER_URL` (contoh: `https://HOST:9200`).
-2. Endpoint agent list dan SCA dibaca dari `WAZUH_API_URL` (umumnya API Manager di port `55000`).
-3. Jika `WAZUH_API_URL` salah host/port/path, Anda bisa tetap melihat alert live dari indexer, tetapi endpoint agent/SCA akan gagal.
+2. Endpoint agent list dan SCA dibaca dari `WAZUH_API_URL` dan **wajib** mengarah ke API Manager (disarankan `https://HOST:55000`).
+3. Endpoint autentikasi default backend: `/security/user/authenticate?raw=true` (Basic Auth → JWT token).
+4. Jika `WAZUH_API_URL` salah host/port/path, Anda bisa tetap melihat alert live dari indexer, tetapi endpoint agent/SCA akan gagal.
 
 Catatan keamanan:
 
@@ -213,7 +211,7 @@ Validasi schema terbentuk:
 1. `python -m alembic current`
 2. Pastikan tabel inti tersedia: `assets`, `risk_scores`, `threat_state`, `sca_snapshots`.
 
-#### D5. Load baseline asset registry ke database
+#### D5. Bootstrap baseline asset registry ke database
 
 Sumber baseline: [config/assets_registry.json](../config/assets_registry.json).
 
@@ -225,6 +223,11 @@ Perintah:
 Alternatif:
 
 1. `make seed`
+
+Catatan:
+
+1. Perintah `seed` di sini adalah **bootstrap CMDB aset** (asset registry), bukan simulasi telemetry Wazuh.
+2. Telemetry alert/SCA tetap diambil live dari Wazuh API + Indexer.
 
 ### E. Menjalankan dan Memvalidasi Wazuh Client
 
@@ -287,11 +290,13 @@ Komponen:
 
 1. [ingestion/alert_fetcher.py](../ingestion/alert_fetcher.py)
 2. [ingestion/sca_fetcher.py](../ingestion/sca_fetcher.py)
+3. [ingestion/threat_hunting.py](../ingestion/threat_hunting.py)
 
 Tujuan eksekusi:
 
 1. Alert Fetcher menghasilkan ringkasan count per level.
 2. SCA Fetcher menghasilkan pass percentage dan vulnerability score.
+3. Threat Hunting Fetcher menghasilkan snapshot investigasi (event stream, histogram, top rules).
 
 Cara menjalankan langsung dari terminal:
 
@@ -301,6 +306,9 @@ python -m ingestion.alert_fetcher
 
 # Fetcher SCA (auto-discovery agent dari telemetry 24 jam terakhir)
 python -m ingestion.sca_fetcher
+
+# Fetcher Threat Hunting (snapshot gaya UI Threat Hunting)
+python -m ingestion.threat_hunting
 ```
 
 Contoh eksekusi manual via REPL:
@@ -336,11 +344,11 @@ Sebelum lanjut ke Sprint 3-4, pastikan kondisi berikut terpenuhi:
 
 1. Docker PostgreSQL berjalan stabil.
 2. Alembic migration sudah `head`.
-3. Data aset berhasil di-seed.
+3. Baseline asset registry berhasil di-bootstrap.
 4. Unit test ingestion lolos.
 5. Alert live dari indexer dapat di-query (proof telemetry live).
-6. Jika API Manager reachable: agent list + SCA tampil.
-7. Jika API Manager belum reachable: demo tetap sukses dengan fallback terkontrol (SCA `unavailable`/fallback 50%).
+6. API Manager reachable: agent list + SCA tampil.
+7. Threat Hunting snapshot dapat ditarik per agent (event stream + histogram + top rules).
 
 Perintah validasi cepat:
 
@@ -360,10 +368,10 @@ Masalah umum dan solusi:
 3. `WazuhAuthenticationError`.
    Solusi: verifikasi username/password di `.env` dan hak akses user Wazuh.
 4. `Wazuh API authentication endpoint not found (404)`.
-   Solusi: cek `WAZUH_API_URL` (host/port/path), umumnya API Manager ada di port `55000`.
+   Solusi: cek `WAZUH_API_URL` (harus API Manager), gunakan port `55000`, dan pastikan auth path `/security/user/authenticate?raw=true`.
 5. SSL error saat hit endpoint Wazuh lab.
    Solusi: gunakan `WAZUH_VERIFY_SSL=false` untuk environment lab self-signed.
-6. Seed gagal karena format JSON.
+6. Bootstrap asset registry gagal karena format JSON.
    Solusi: cek validitas JSON pada [config/assets_registry.json](../config/assets_registry.json) dan pastikan field wajib ada.
 
 ### J. Demo Urutan Lengkap untuk Stakeholder
@@ -389,7 +397,7 @@ make check-db
 
 Output yang diharapkan: status `healthy` pada PostgreSQL dan konfirmasi koneksi berhasil.
 
-#### Langkah 3 — Buktikan schema dan data seed tersedia
+#### Langkah 3 — Buktikan schema dan baseline asset registry tersedia
 
 ```bash
 python -m alembic current
@@ -411,19 +419,16 @@ Output yang diharapkan:
   WazuhClient — Demo / Smoke Test
 ============================================================
 
-[1] Active agents (API): unavailable (...)
-   Falling back to live indexer telemetry for agent discovery.
-
-[1b] Agents seen in alerts (Indexer, 24h): N
-   • 000
-    ...
+[1] Active agents (API): N
+   • 001 ...
 [2] Alert counts (last 24 h) for agent 000:
     low       : N
     medium    : N
     high      : N
     critical  : N
     T_new_raw = N
-[3] SCA policies: unavailable (...) — requires Wazuh Manager API connectivity.
+[3] SCA policies for agent 000: N
+   • ...
 
 [OK] WazuhClient smoke test passed.
 ```
@@ -468,8 +473,31 @@ agent=001  asset=None
    policy : fallback — No SCA data available
    pass   : 0/0 (50.0%)
    V score: 50.0
+
 ...
 [OK] SCAFetcher demo complete.
+```
+
+#### Langkah 7 (Live Wazuh) — Buktikan Threat Hunting Fetcher berfungsi
+
+```bash
+python -m ingestion.threat_hunting
+```
+
+Output yang diharapkan:
+
+```
+============================================================
+   ThreatHuntingFetcher - Demo / Smoke Test
+============================================================
+
+agent_id      : 001
+total_hits    : N
+level_groups  : {'low': N, 'medium': N, 'high': N, 'critical': N}
+top_rules     :
+   - 5710 (lvl=5) xN | sshd: Attempt to login using a non-existent user
+...
+[OK] ThreatHuntingFetcher demo complete.
 ```
 
 #### Catatan operasional

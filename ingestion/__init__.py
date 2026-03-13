@@ -5,9 +5,14 @@ Public interface:
     WazuhClient       Low-level + facade HTTP client
     AlertFetcher      Fetch + classify Wazuh alerts per agent
     SCAFetcher        Fetch SCA scan results per agent
+    ThreatHuntingFetcher
+                     Fetch threat-hunting snapshots (events, histogram, top rules)
     AssetRegistry     CMDB management (seed, list, sync)
     AlertCounts       DTO returned by AlertFetcher
     SCAResult         DTO returned by SCAFetcher
+    ThreatHuntingSnapshot
+    ThreatHuntingTopRule
+    ThreatHuntingHistogramPoint
     WazuhAgent        DTO for a Wazuh agent
     SCASummary        DTO for a raw SCA policy result
 """
@@ -20,10 +25,14 @@ __all__ = [
     "WazuhClient",
     "AlertFetcher",
     "SCAFetcher",
+    "ThreatHuntingFetcher",
     "AssetRegistry",
     # DTOs
     "AlertCounts",
     "SCAResult",
+    "ThreatHuntingSnapshot",
+    "ThreatHuntingTopRule",
+    "ThreatHuntingHistogramPoint",
     "WazuhAgent",
     "SCASummary",
     # Exceptions
@@ -41,10 +50,14 @@ _SYMBOL_TO_MODULE = {
     "WazuhClient": "ingestion.wazuh_client",
     "AlertFetcher": "ingestion.alert_fetcher",
     "SCAFetcher": "ingestion.sca_fetcher",
+    "ThreatHuntingFetcher": "ingestion.threat_hunting",
     "AssetRegistry": "ingestion.asset_registry",
     # DTOs
     "AlertCounts": "ingestion.alert_fetcher",
     "SCAResult": "ingestion.sca_fetcher",
+    "ThreatHuntingSnapshot": "ingestion.threat_hunting",
+    "ThreatHuntingTopRule": "ingestion.threat_hunting",
+    "ThreatHuntingHistogramPoint": "ingestion.threat_hunting",
     "WazuhAgent": "ingestion.wazuh_client",
     "SCASummary": "ingestion.wazuh_client",
     # Exceptions

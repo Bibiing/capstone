@@ -1,58 +1,26 @@
 [
   {
+    "asset_id": "asset-000",
+    "hostname": "wazuh-manager-server",
+    "wazuh_agent_id": "000",
+    "ip_address": "127.0.0.1",
+    "likert_score": 5.0,
+    "description": "Wazuh Security Manager - Pusat kontrol keamanan. Jika tumbang, visibilitas keamanan seluruh bank hilang."
+  },
+  {
     "asset_id": "asset-001",
     "hostname": "db-nasabah-prod",
     "wazuh_agent_id": "001",
     "ip_address": "10.0.0.4",
     "likert_score": 5.0,
-    "description": "Server Database Nasabah Utama - Menyimpan seluruh data rekening, transaksi, dan identitas nasabah. Diatur ketat oleh UU Pelindungan Data Pribadi dan OJK."
+    "description": "Server Database Nasabah Utama - Menyimpan seluruh data rekening, transaksi, dan identitas nasabah."
   },
   {
     "asset_id": "asset-002",
-    "hostname": "app-corebanking-01",
+    "hostname": "app-internal-hris",
     "wazuh_agent_id": "002",
     "ip_address": "10.0.0.5",
-    "likert_score": 4.5,
-    "description": "Aplikasi Core Banking - Prosesor utama transaksi keuangan, validasi pembayaran, dan transfer antar rekening."
-  },
-  {
-    "asset_id": "asset-003",
-    "hostname": "app-mobilebanking-gw",
-    "wazuh_agent_id": "003",
-    "ip_address": "10.0.0.6",
-    "likert_score": 4.0,
-    "description": "API Gateway Mobile Banking - Titik kontak langsung dengan nasabah. Downtime langsung terasa oleh jutaan pengguna mobile banking."
-  },
-  {
-    "asset_id": "asset-004",
-    "hostname": "srv-atm-switch",
-    "wazuh_agent_id": "004",
-    "ip_address": "10.0.0.7",
-    "likert_score": 4.0,
-    "description": "ATM Switch Server - Memproses dan merutekan transaksi dari seluruh mesin ATM. Downtime berarti seluruh ATM tidak bisa digunakan."
-  },
-  {
-    "asset_id": "asset-005",
-    "hostname": "srv-backup-dr",
-    "wazuh_agent_id": "005",
-    "ip_address": "10.0.0.8",
-    "likert_score": 3.5,
-    "description": "Disaster Recovery Backup Server - Menyimpan backup harian seluruh data operasional. Kritikal untuk pemulihan insiden."
-  },
-  {
-    "asset_id": "asset-006",
-    "hostname": "srv-internal-mail",
-    "wazuh_agent_id": "006",
-    "ip_address": "10.0.0.9",
-    "likert_score": 2.5,
-    "description": "Internal Mail Server - Komunikasi internal antar karyawan. Tidak menyimpan data nasabah secara langsung."
-  },
-  {
-    "asset_id": "asset-007",
-    "hostname": "ws-receptionist-01",
-    "wazuh_agent_id": "007",
-    "ip_address": "10.0.0.10",
-    "likert_score": 1.5,
-    "description": "PC Resepsionis Kantor Pusat - Digunakan untuk manajemen tamu. Tidak terhubung ke sistem core banking."
+    "likert_score": 2.0,
+    "description": "Aplikasi Internal HRIS - Data contoh (Dummy) untuk membuktikan sistem dapat menangani aset dengan 0 ancaman."
   }
 ]

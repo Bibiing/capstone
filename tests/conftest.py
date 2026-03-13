@@ -84,6 +84,19 @@ def mock_wazuh_client() -> MagicMock:
         "low": 0, "medium": 0, "high": 0, "critical": 0
     }
     client.get_recent_alerts.return_value = []
+    client.get_threat_hunting_snapshot.return_value = {
+        "agent_id": "001",
+        "manager_name": "manager",
+        "window_start": datetime(2026, 3, 13, 9, 0, 0, tzinfo=timezone.utc),
+        "window_end": datetime(2026, 3, 13, 10, 0, 0, tzinfo=timezone.utc),
+        "interval": "30m",
+        "total_hits": 0,
+        "events": [],
+        "histogram": [],
+        "by_rule_level": {},
+        "by_level_group": {},
+        "top_rules": [],
+    }
 
     return client
 

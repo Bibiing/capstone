@@ -389,10 +389,13 @@ Salin `.env.example` ke `.env` dan isi nilai berikut:
 
 ```env
 # === WAZUH CONNECTION ===
-WAZUH_API_URL=https://20.194.14.146
+WAZUH_API_URL=https://20.194.14.146:55000
 WAZUH_INDEXER_URL=https://20.194.14.146:9200
-WAZUH_API_USER=wazuh
+WAZUH_API_USER=wazuh-wui
 WAZUH_API_PASSWORD=<your_password>
+WAZUH_API_AUTH_PATH=/security/user/authenticate
+WAZUH_API_AUTH_USE_RAW=true
+WAZUH_API_AUTO_PORT_DISCOVERY=true
 WAZUH_VERIFY_SSL=false          # Set true jika sertifikat valid
 
 # === DATABASE ===
@@ -500,7 +503,7 @@ pytest tests/ --cov=engine --cov-report=html  # Dengan coverage report
 - [ ] Buat `sca_fetcher.py` — query SCA score per agent
 - [ ] Verifikasi data telemetry live dari Wazuh (Indexer + API)
 - [ ] Tulis unit test dasar untuk fetcher (dengan mock)
-- [ ] **DoD**: Docker `docker-compose up` berjalan, data dummy bisa masuk ke DB
+- [ ] **DoD**: Docker `docker-compose up` berjalan, integrasi live Wazuh (API + Indexer + Threat Hunting snapshot) tervalidasi
 
 ---
 
@@ -520,7 +523,7 @@ pytest tests/ --cov=engine --cov-report=html  # Dengan coverage report
 
 ---
 
-### Sprint 5 (Minggu 9–10): Dashboard
+### Sprint 5 (Minggu 9–10): Dashboard (FE)
 
 **Goal**: Dashboard aktif, dapat dibaca manajemen.
 
@@ -562,13 +565,14 @@ Bertanggung jawab untuk semua komunikasi dengan Wazuh.
 - `get_alerts(agent_id, from_time, to_time)` → query Wazuh Indexer (OpenSearch) untuk alert dalam rentang waktu
 - `get_sca_summary(agent_id)` → dapatkan SCA pass/fail/not-applicable per agent
 - `get_agents()` → daftar semua agent aktif
+- `get_threat_hunting_snapshot(...)` → ambil snapshot setara layar Threat Hunting (events, histogram, top rules)
 
 **Endpoint Wazuh yang digunakan:**
 
 ```
-POST https://20.194.14.146/security/user/authenticate  → Token
-GET  https://20.194.14.146/agents                       → Agent list
-GET  https://20.194.14.146/sca/{agent_id}               → SCA summary
+POST https://20.194.14.146:55000/security/user/authenticate?raw=true  → Token
+GET  https://20.194.14.146:55000/agents                                  → Agent list
+GET  https://20.194.14.146:55000/sca/{agent_id}                          → SCA summary
 POST https://20.194.14.146:9200/wazuh-alerts-*/_search → Alert query
 ```
 
@@ -603,7 +607,39 @@ POST https://20.194.14.146:9200/wazuh-alerts-*/_search → Alert query
 
 ---
 
-### 11.2 Time Decay State Management
+### 11.2 Threat Hunting Integration (`ingestion/threat_hunting.py`)
+
+Backend sudah menyediakan service khusus Threat Hunting yang selaras dengan tampilan Wazuh UI.
+
+Output utama per snapshot:
+
+- Event stream terbaru per agent
+- Histogram event per interval (default `30m`)
+- Distribusi `rule.level` (exact + group low/medium/high/critical)
+- Top rule (`rule.id`) berdasarkan frekuensi
+
+Contoh command demo:
+
+```bash
+python -m ingestion.threat_hunting
+```
+
+Contoh penggunaan di Python:
+
+```python
+from ingestion.wazuh_client import WazuhClient
+from ingestion.threat_hunting import ThreatHuntingFetcher
+
+with WazuhClient.from_settings() as client:
+  fetcher = ThreatHuntingFetcher(client=client)
+  snapshot = fetcher.fetch(agent_id="001", manager_name="manager")
+  print(snapshot.total_hits)
+  print(snapshot.by_level_group)
+```
+
+---
+
+### 11.3 Time Decay State Management
 
 State `T_prev` per aset **harus disimpan di database** agar persist antar restart.
 
@@ -624,7 +660,7 @@ Setiap kali scoring engine berjalan:
 
 ---
 
-### 11.3 Database Schema
+### 11.4 Database Schema
 
 ```sql
 -- Aset terdaftar (CMDB dummy)
@@ -711,7 +747,7 @@ Server DB Nasabah:
 ### Konfigurasi Koneksi Lab
 
 ```
-Wazuh API  : https://20.194.14.146          (port 443/55000)
+Wazuh API (Manager)  : https://20.194.14.146:55000
 Wazuh Indexer (OpenSearch): https://20.194.14.146:9200
 ```
 
@@ -721,10 +757,9 @@ Wazuh Indexer (OpenSearch): https://20.194.14.146:9200
 ### Test Koneksi Manual
 
 ```bash
-# Test authentikasi ke Wazuh API
-curl -k -X POST "https://20.194.14.146/security/user/authenticate" \
-     -H "Content-Type: application/json" \
-     -d '{"user": "wazuh", "password": "<password>"}'
+# Test autentikasi ke Wazuh Manager API (raw token)
+curl -k -u wazuh-wui:<password> -X POST \
+  "https://20.194.14.146:55000/security/user/authenticate?raw=true"
 
 # Test query ke Indexer
 curl -k -u admin:<password> \

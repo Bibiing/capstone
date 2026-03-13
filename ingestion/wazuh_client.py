@@ -44,6 +44,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from tenacity import (
@@ -154,10 +155,14 @@ class _WazuhAPIClient:
     _TOKEN_TTL_SECONDS: int = 900
 
     def __init__(self, settings: Settings) -> None:
-        self._base_url = settings.wazuh_api_url
+        self._configured_base_url = settings.wazuh_api_url
+        self._active_base_url = settings.wazuh_api_url
         self._user = settings.wazuh_api_user
         self._password = settings.wazuh_api_password          # SecretStr
         self._verify_ssl = settings.wazuh_verify_ssl
+        self._auth_path = settings.wazuh_api_auth_path
+        self._auth_use_raw = settings.wazuh_api_auth_use_raw
+        self._auto_port_discovery = settings.wazuh_api_auto_port_discovery
         self._token: Optional[_JWTToken] = None
 
         if not self._verify_ssl:
@@ -166,62 +171,137 @@ class _WazuhAPIClient:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         self._http = httpx.Client(
-            base_url=self._base_url,
             verify=self._verify_ssl,
             timeout=httpx.Timeout(settings.wazuh_api_timeout),
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             headers={"Content-Type": "application/json"},
         )
 
+    @staticmethod
+    def _join_url(base_url: str, path: str) -> str:
+        return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+    def _build_auth_urls(self) -> list[tuple[str, bool]]:
+        urls: list[tuple[str, bool]] = []
+
+        auth_path = self._auth_path
+        if self._auth_use_raw and "raw=true" not in auth_path:
+            sep = "&" if "?" in auth_path else "?"
+            auth_path = f"{auth_path}{sep}raw=true"
+
+        primary = self._join_url(self._configured_base_url, auth_path)
+        urls.append((primary, self._auth_use_raw))
+
+        if self._auth_use_raw:
+            legacy = self._join_url(self._configured_base_url, self._auth_path)
+            urls.append((legacy, False))
+
+        parsed = urlsplit(self._configured_base_url)
+        if self._auto_port_discovery and parsed.port is None:
+            host = parsed.hostname or parsed.netloc
+            if host:
+                fallback_base = urlunsplit((parsed.scheme, f"{host}:55000", "", "", ""))
+                fallback_auth = self._join_url(fallback_base, auth_path)
+                if all(existing_url != fallback_auth for existing_url, _ in urls):
+                    urls.append((fallback_auth, self._auth_use_raw))
+                if self._auth_use_raw:
+                    fallback_legacy = self._join_url(fallback_base, self._auth_path)
+                    if all(existing_url != fallback_legacy for existing_url, _ in urls):
+                        urls.append((fallback_legacy, False))
+
+        return urls
+
+    @staticmethod
+    def _extract_token(response: httpx.Response, raw_mode: bool) -> str:
+        if raw_mode:
+            token = response.text.strip().strip('"').strip("'")
+            if token:
+                return token
+
+        try:
+            payload = response.json()
+            token = (
+                payload.get("data", {}).get("token")
+                or payload.get("token")
+                or payload.get("data")
+            )
+            if isinstance(token, str) and token.strip():
+                return token.strip()
+        except ValueError:
+            pass
+
+        fallback = response.text.strip().strip('"').strip("'")
+        if fallback:
+            return fallback
+
+        raise WazuhAPIError("Wazuh API auth response did not contain a JWT token.")
+
     # ── Authentication ─────────────────────────────────────────────────────────
 
     def _authenticate(self) -> None:
         """Fetch a fresh JWT token and cache it. Raises on auth failure."""
         logger.debug("Authenticating to Wazuh API | user=%s", self._user)
-        try:
-            resp = self._http.post(
-                "/security/user/authenticate",
-                auth=(self._user, self._password.get_secret_value()),
-            )
-        except httpx.ConnectError as exc:
-            raise WazuhConnectionError(
-                f"Cannot connect to Wazuh API at {self._base_url}: {exc}"
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise WazuhConnectionError(
-                f"Wazuh API authentication timed out: {exc}"
-            ) from exc
+        auth_urls = self._build_auth_urls()
 
-        if resp.status_code == 401:
-            raise WazuhAuthenticationError(
-                "Wazuh API: invalid credentials. Check WAZUH_API_USER / WAZUH_API_PASSWORD."
-            )
-        if resp.status_code == 403:
-            raise WazuhAuthenticationError(
-                "Wazuh API: authentication succeeded but user has insufficient permissions."
-            )
-        if resp.status_code == 404:
-            raise WazuhAuthenticationError(
-                "Wazuh API authentication endpoint not found (404). "
-                "Check WAZUH_API_URL (host/port/path), usually manager API listens on :55000."
-            )
-        if resp.status_code >= 500:
-            raise WazuhAPIError(
-                f"Wazuh API server error during auth: {resp.text}", resp.status_code
-            )
-        if resp.status_code != 200:
-            raise WazuhAPIError(
-                f"Unexpected auth response {resp.status_code}: {resp.text}",
-                resp.status_code,
-            )
+        last_auth_error: Optional[Exception] = None
+        for auth_url, raw_mode in auth_urls:
+            try:
+                resp = self._http.post(
+                    auth_url,
+                    auth=(self._user, self._password.get_secret_value()),
+                )
+            except httpx.ConnectError as exc:
+                last_auth_error = WazuhConnectionError(
+                    f"Cannot connect to Wazuh API at {auth_url}: {exc}"
+                )
+                continue
+            except httpx.TimeoutException as exc:
+                last_auth_error = WazuhConnectionError(
+                    f"Wazuh API authentication timed out at {auth_url}: {exc}"
+                )
+                continue
 
-        token_str = resp.json()["data"]["token"]
+            if resp.status_code == 401:
+                raise WazuhAuthenticationError(
+                    "Wazuh API: invalid credentials. Check WAZUH_API_USER / WAZUH_API_PASSWORD."
+                )
+            if resp.status_code == 403:
+                raise WazuhAuthenticationError(
+                    "Wazuh API: authentication succeeded but user has insufficient permissions."
+                )
+            if resp.status_code == 404:
+                last_auth_error = WazuhAuthenticationError(
+                    "Wazuh API authentication endpoint not found (404). "
+                    "Check WAZUH_API_URL (must target manager API, usually :55000)."
+                )
+                continue
+            if resp.status_code >= 500:
+                last_auth_error = WazuhAPIError(
+                    f"Wazuh API server error during auth: {resp.text}", resp.status_code
+                )
+                continue
+            if resp.status_code != 200:
+                last_auth_error = WazuhAPIError(
+                    f"Unexpected auth response {resp.status_code}: {resp.text}",
+                    resp.status_code,
+                )
+                continue
+
+            token_str = self._extract_token(resp, raw_mode=raw_mode)
+            parsed = urlsplit(auth_url)
+            self._active_base_url = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+            break
+        else:
+            if last_auth_error is not None:
+                raise last_auth_error
+            raise WazuhAuthenticationError("Wazuh API authentication failed without a response.")
+
         self._token = _JWTToken(
             value=token_str,
             expires_at=datetime.now(timezone.utc)
             + timedelta(seconds=self._TOKEN_TTL_SECONDS),
         )
-        logger.info("Wazuh API authentication successful.")
+        logger.info("Wazuh API authentication successful | base_url=%s", self._active_base_url)
 
     def _get_auth_headers(self) -> dict[str, str]:
         """Return Authorization header. Re-authenticates if token is expired."""
@@ -248,7 +328,7 @@ class _WazuhAPIClient:
         for attempt in range(2):
             try:
                 resp = self._http.get(
-                    path,
+                    self._join_url(self._active_base_url, path),
                     headers=self._get_auth_headers(),
                     params=params or {},
                 )
@@ -680,6 +760,190 @@ class WazuhClient:
         resp = self._indexer.search(self.ALERT_INDEX, query)
         buckets = resp.get("aggregations", {}).get("by_agent", {}).get("buckets", [])
         return [str(b.get("key", "")) for b in buckets if b.get("key")]
+
+    def get_threat_hunting_snapshot(
+        self,
+        agent_id: str,
+        from_dt: datetime,
+        to_dt: datetime,
+        manager_name: Optional[str] = "manager",
+        interval: str = "30m",
+        event_limit: int = 100,
+    ) -> dict[str, Any]:
+        """
+        Return a Threat Hunting-style snapshot for one agent.
+
+        Includes:
+            - recent events table
+            - event histogram per interval
+            - top rule IDs
+            - rule.level distributions (exact and grouped)
+        """
+        must_filters: list[dict[str, Any]] = [
+            {"term": {"agent.id": agent_id}},
+            {
+                "range": {
+                    "timestamp": {
+                        "gte": from_dt.isoformat(),
+                        "lte": to_dt.isoformat(),
+                    }
+                }
+            },
+        ]
+        if manager_name:
+            must_filters.append({"term": {"manager.name": manager_name}})
+
+        query = {
+            "query": {"bool": {"must": must_filters}},
+            "sort": [{"timestamp": {"order": "desc"}}],
+            "size": event_limit,
+            "aggs": {
+                "events_per_interval": {
+                    "date_histogram": {
+                        "field": "timestamp",
+                        "fixed_interval": interval,
+                        "min_doc_count": 0,
+                        "extended_bounds": {
+                            "min": from_dt.isoformat(),
+                            "max": to_dt.isoformat(),
+                        },
+                    }
+                },
+                "by_rule_level": {
+                    "terms": {
+                        "field": "rule.level",
+                        "size": 16,
+                        "order": {"_key": "asc"},
+                    }
+                },
+                "by_level_group": {
+                    "range": {
+                        "field": "rule.level",
+                        "ranges": [
+                            {"key": "low", "from": 0, "to": 5},
+                            {"key": "medium", "from": 5, "to": 8},
+                            {"key": "high", "from": 8, "to": 12},
+                            {"key": "critical", "from": 12, "to": 16},
+                        ],
+                    }
+                },
+                "top_rules": {
+                    "terms": {
+                        "field": "rule.id",
+                        "size": 10,
+                        "order": {"_count": "desc"},
+                    },
+                    "aggs": {
+                        "sample": {
+                            "top_hits": {
+                                "size": 1,
+                                "_source": {
+                                    "includes": [
+                                        "rule.description",
+                                        "rule.level",
+                                    ]
+                                },
+                            }
+                        }
+                    },
+                },
+            },
+        }
+
+        resp = self._indexer.search(self.ALERT_INDEX, query)
+        hits = resp.get("hits", {})
+
+        total_hits = hits.get("total", 0)
+        if isinstance(total_hits, dict):
+            total_hits = int(total_hits.get("value", 0))
+        else:
+            total_hits = int(total_hits)
+
+        events: list[WazuhAlert] = []
+        for hit in hits.get("hits", []):
+            src = hit.get("_source", {})
+            rule = src.get("rule", {})
+            mitre = rule.get("mitre", {}) if isinstance(rule.get("mitre"), dict) else {}
+
+            ts_str = src.get("timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                ts = datetime.now(timezone.utc)
+
+            events.append(
+                WazuhAlert(
+                    alert_id=hit.get("_id", ""),
+                    agent_id=src.get("agent", {}).get("id", agent_id),
+                    agent_name=src.get("agent", {}).get("name", ""),
+                    rule_level=rule.get("level", 0),
+                    rule_id=str(rule.get("id", "")),
+                    rule_description=rule.get("description", ""),
+                    timestamp=ts,
+                    source_ip=src.get("data", {}).get("srcip"),
+                    mitre_tactics=mitre.get("tactic", []),
+                )
+            )
+
+        aggs = resp.get("aggregations", {})
+
+        histogram = [
+            {
+                "timestamp": bucket.get("key_as_string", ""),
+                "count": int(bucket.get("doc_count", 0)),
+            }
+            for bucket in aggs.get("events_per_interval", {}).get("buckets", [])
+        ]
+
+        by_rule_level = {
+            str(bucket.get("key")): int(bucket.get("doc_count", 0))
+            for bucket in aggs.get("by_rule_level", {}).get("buckets", [])
+        }
+
+        by_level_group = {
+            str(bucket.get("key")): int(bucket.get("doc_count", 0))
+            for bucket in aggs.get("by_level_group", {}).get("buckets", [])
+        }
+
+        top_rules: list[dict[str, Any]] = []
+        for bucket in aggs.get("top_rules", {}).get("buckets", []):
+            top_hit = (
+                bucket.get("sample", {})
+                .get("hits", {})
+                .get("hits", [{}])[0]
+                .get("_source", {})
+            )
+            rule_info = top_hit.get("rule", {})
+            top_rules.append(
+                {
+                    "rule_id": str(bucket.get("key", "")),
+                    "count": int(bucket.get("doc_count", 0)),
+                    "description": rule_info.get("description", ""),
+                    "level": int(rule_info.get("level", 0)) if rule_info.get("level") is not None else None,
+                }
+            )
+
+        logger.info(
+            "Threat hunting snapshot | agent=%s manager=%s total_hits=%d interval=%s",
+            agent_id,
+            manager_name,
+            total_hits,
+            interval,
+        )
+
+        return {
+            "agent_id": agent_id,
+            "manager_name": manager_name,
+            "window_start": from_dt,
+            "window_end": to_dt,
+            "interval": interval,
+            "total_hits": total_hits,
+            "events": events,
+            "histogram": histogram,
+            "by_rule_level": by_rule_level,
+            "by_level_group": by_level_group,
+            "top_rules": top_rules,
+        }
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 

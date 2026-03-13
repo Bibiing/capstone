@@ -21,6 +21,7 @@ import pytest
 from ingestion.alert_fetcher import AlertCounts, AlertFetcher
 from ingestion.exceptions import WazuhAuthenticationError, WazuhConnectionError
 from ingestion.sca_fetcher import SCAFetcher, SCAResult
+from ingestion.threat_hunting import ThreatHuntingFetcher
 from ingestion.wazuh_client import SCASummary
 
 
@@ -273,3 +274,54 @@ class TestSCAFetcher:
 
         assert result.pass_percentage == 60.0
         assert result.vulnerability_score == 40.0
+
+
+# =============================================================================
+# ThreatHuntingFetcher Tests
+# =============================================================================
+
+class TestThreatHuntingFetcher:
+    def test_fetch_maps_snapshot_structure(self, mock_wazuh_client):
+        mock_wazuh_client.get_threat_hunting_snapshot.return_value = {
+            "agent_id": "001",
+            "manager_name": "manager",
+            "window_start": datetime(2026, 3, 13, 9, 0, 0, tzinfo=timezone.utc),
+            "window_end": datetime(2026, 3, 13, 10, 0, 0, tzinfo=timezone.utc),
+            "interval": "30m",
+            "total_hits": 2476,
+            "events": [],
+            "histogram": [
+                {"timestamp": "2026-03-13T09:00:00.000Z", "count": 350},
+                {"timestamp": "2026-03-13T09:30:00.000Z", "count": 120},
+            ],
+            "by_rule_level": {"5": 2300, "8": 176},
+            "by_level_group": {"low": 0, "medium": 2300, "high": 176, "critical": 0},
+            "top_rules": [
+                {
+                    "rule_id": "5710",
+                    "count": 2100,
+                    "description": "sshd: Attempt to login using a non-existent user",
+                    "level": 5,
+                }
+            ],
+        }
+
+        fetcher = ThreatHuntingFetcher(client=mock_wazuh_client)
+        result = fetcher.fetch(agent_id="001", manager_name="manager")
+
+        assert result.agent_id == "001"
+        assert result.total_hits == 2476
+        assert result.by_level_group["medium"] == 2300
+        assert len(result.histogram) == 2
+        assert result.top_rules[0].rule_id == "5710"
+        assert result.top_rules[0].level == 5
+
+    def test_fetch_calls_client_with_expected_filters(self, mock_wazuh_client):
+        fetcher = ThreatHuntingFetcher(client=mock_wazuh_client, default_window_hours=24)
+        fetcher.fetch(agent_id="001", manager_name="manager", interval="30m", event_limit=200)
+
+        kwargs = mock_wazuh_client.get_threat_hunting_snapshot.call_args.kwargs
+        assert kwargs["agent_id"] == "001"
+        assert kwargs["manager_name"] == "manager"
+        assert kwargs["interval"] == "30m"
+        assert kwargs["event_limit"] == 200

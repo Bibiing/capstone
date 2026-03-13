@@ -44,11 +44,11 @@ class Settings(BaseSettings):
 
     # ── Wazuh Manager REST API ─────────────────────────────────────────────────
     wazuh_api_url: str = Field(
-        default="https://20.194.14.146",
-        description="Wazuh Manager REST API base URL.",
+        default="https://20.194.14.146:55000",
+        description="Wazuh Manager REST API base URL (recommended: https://HOST:55000).",
     )
     wazuh_api_user: str = Field(
-        default="wazuh",
+        default="wazuh-wui",
         description="Wazuh API username.",
     )
     wazuh_api_password: SecretStr = Field(
@@ -83,6 +83,24 @@ class Settings(BaseSettings):
         ge=5,
         le=120,
         description="HTTP request timeout in seconds.",
+    )
+    wazuh_api_auth_path: str = Field(
+        default="/security/user/authenticate",
+        description="Relative auth path on Wazuh Manager API.",
+    )
+    wazuh_api_auth_use_raw: bool = Field(
+        default=True,
+        description=(
+            "Append ?raw=true during auth to retrieve plain JWT token. "
+            "Recommended for Wazuh Manager API compatibility."
+        ),
+    )
+    wazuh_api_auto_port_discovery: bool = Field(
+        default=True,
+        description=(
+            "If WAZUH_API_URL has no explicit port and auth returns 404, "
+            "automatically retry auth against port 55000."
+        ),
     )
     wazuh_max_retries: int = Field(
         default=3,
