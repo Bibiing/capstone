@@ -75,7 +75,7 @@ Proyek ini membangun **Proof of Concept (PoC)** sebuah _Risk Scoring Engine_ yan
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │               DATABASE (PostgreSQL / TimescaleDB)             │
-│  Table: assets | risk_scores | alert_snapshots | sca_scores  │
+│  Table: assets | risk_scores | threat_state | sca_snapshots  │
 └──────────────────────────────┬──────────────────────────────┘
                                │ Query
                                ▼
@@ -263,6 +263,7 @@ capstone/
 │   ├── wazuh_client.py           # HTTP client ke Wazuh API & Indexer
 │   ├── alert_fetcher.py          # Tarik & klasifikasi alert per periode
 │   ├── sca_fetcher.py            # Tarik SCA score per agent
+│   ├── threat_hunting.py         # Snapshot Threat Hunting (events, histogram, top rule)
 │   └── asset_registry.py        # CMDB dummy — daftar aset + Likert score
 │
 ├── engine/                       # Risk Scoring Engine (core logic)
@@ -646,9 +647,9 @@ State `T_prev` per aset **harus disimpan di database** agar persist antar restar
 ```sql
 -- Tabel untuk menyimpan state T terakhir
 CREATE TABLE threat_state (
-    asset_id    VARCHAR(50) PRIMARY KEY,
-    t_previous  FLOAT       NOT NULL DEFAULT 0.0,
-    updated_at  TIMESTAMP   NOT NULL DEFAULT NOW()
+  asset_id    VARCHAR(50) PRIMARY KEY,
+  t_previous  FLOAT       NOT NULL DEFAULT 0.0,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
 
@@ -662,40 +663,91 @@ Setiap kali scoring engine berjalan:
 
 ### 11.4 Database Schema
 
+Schema final saat ini mengikuti migrasi Alembic `001_initial_schema`.
+
+Relasi utama:
+
+- `assets` (master aset) 1:N `risk_scores`
+- `assets` 1:1 `threat_state`
+- `assets` 1:N `sca_snapshots`
+
 ```sql
--- Aset terdaftar (CMDB dummy)
+-- ============================================================================
+-- TABLE: assets
+-- ============================================================================
 CREATE TABLE assets (
-    asset_id     VARCHAR(50) PRIMARY KEY,
-    hostname     VARCHAR(100) NOT NULL,
-    wazuh_agent_id VARCHAR(10),
-    ip_address   INET,
-    likert_score FLOAT NOT NULL,           -- Rata-rata 8 jawaban kuesioner
-    impact       FLOAT GENERATED ALWAYS AS (likert_score / 5.0) STORED,
-    description  TEXT,
-    created_at   TIMESTAMP DEFAULT NOW()
+  asset_id         VARCHAR(50) PRIMARY KEY,
+  hostname         VARCHAR(100) NOT NULL,
+  wazuh_agent_id   VARCHAR(10) UNIQUE,
+  ip_address       VARCHAR(45),
+  likert_score     FLOAT NOT NULL,
+  description      TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT ck_assets_likert_range
+    CHECK (likert_score >= 1.0 AND likert_score <= 5.0)
 );
 
--- Time-series skor risiko
+-- ============================================================================
+-- TABLE: risk_scores (append-only time-series)
+-- ============================================================================
 CREATE TABLE risk_scores (
-    id           SERIAL PRIMARY KEY,
-    asset_id     VARCHAR(50) REFERENCES assets(asset_id),
-    timestamp    TIMESTAMP NOT NULL,
-    risk_score   FLOAT NOT NULL,
-    severity     VARCHAR(10) NOT NULL,     -- Low/Medium/High/Critical
-    impact       FLOAT NOT NULL,
-    vulnerability FLOAT NOT NULL,
-    threat       FLOAT NOT NULL,
-    t_new        FLOAT NOT NULL,
-    t_previous   FLOAT NOT NULL,
-    sca_pass_pct FLOAT NOT NULL,
-    alert_count_low      INT DEFAULT 0,
-    alert_count_medium   INT DEFAULT 0,
-    alert_count_high     INT DEFAULT 0,
-    alert_count_critical INT DEFAULT 0
+  id                 SERIAL PRIMARY KEY,
+  asset_id           VARCHAR(50) NOT NULL
+               REFERENCES assets(asset_id) ON DELETE CASCADE,
+  timestamp          TIMESTAMPTZ NOT NULL,
+  risk_score         FLOAT NOT NULL,
+  severity           VARCHAR(10) NOT NULL,
+  impact             FLOAT NOT NULL,
+  vulnerability      FLOAT NOT NULL,
+  threat             FLOAT NOT NULL,
+  t_new              FLOAT NOT NULL,
+  t_previous         FLOAT NOT NULL,
+  sca_pass_pct       FLOAT NOT NULL,
+  alert_count_low      INTEGER NOT NULL DEFAULT 0,
+  alert_count_medium   INTEGER NOT NULL DEFAULT 0,
+  alert_count_high     INTEGER NOT NULL DEFAULT 0,
+  alert_count_critical INTEGER NOT NULL DEFAULT 0,
+  CONSTRAINT ck_risk_score_range
+    CHECK (risk_score >= 0.0 AND risk_score <= 100.0),
+  CONSTRAINT ck_risk_severity_values
+    CHECK (severity IN ('Low', 'Medium', 'High', 'Critical'))
 );
 
--- Index untuk query time-series yang cepat
-CREATE INDEX idx_risk_scores_asset_time ON risk_scores(asset_id, timestamp DESC);
+CREATE INDEX idx_risk_scores_asset_time
+  ON risk_scores(asset_id, timestamp);
+
+-- ============================================================================
+-- TABLE: threat_state (persist T_prev per asset)
+-- ============================================================================
+CREATE TABLE threat_state (
+  asset_id      VARCHAR(50) PRIMARY KEY
+          REFERENCES assets(asset_id) ON DELETE CASCADE,
+  t_previous    FLOAT NOT NULL DEFAULT 0.0,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================================
+-- TABLE: sca_snapshots (historical SCA posture)
+-- ============================================================================
+CREATE TABLE sca_snapshots (
+  id              SERIAL PRIMARY KEY,
+  asset_id        VARCHAR(50) NOT NULL
+            REFERENCES assets(asset_id) ON DELETE CASCADE,
+  policy_id       VARCHAR(100) NOT NULL,
+  policy_name     VARCHAR(200) NOT NULL,
+  pass_count      INTEGER NOT NULL,
+  fail_count      INTEGER NOT NULL,
+  not_applicable  INTEGER NOT NULL DEFAULT 0,
+  total_checks    INTEGER NOT NULL,
+  pass_percentage FLOAT NOT NULL,
+  scanned_at      TIMESTAMPTZ NOT NULL,
+  CONSTRAINT ck_sca_pass_range
+    CHECK (pass_percentage >= 0.0 AND pass_percentage <= 100.0)
+);
+
+CREATE INDEX idx_sca_asset_time
+  ON sca_snapshots(asset_id, scanned_at);
 ```
 
 ---
