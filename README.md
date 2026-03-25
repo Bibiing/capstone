@@ -473,13 +473,61 @@ python -c "import secrets; print(secrets.token_hex(32))"
 openssl rand -hex 32
 ```
 
-#### OTP Email Settings
+#### OTP Email Settings (Resend API)
 
-```env
-# Konfigurasi pengiriman OTP (gunakan SendGrid atau AWS SES)
-# OTP_PROVIDER=sendgrid
-# SENDGRID_API_KEY=<your_key>
-# SENDGRID_FROM_EMAIL=noreply@bank.local
+Kami menggunakan **Resend** untuk mengirim OTP codes via email.
+
+**Setup Resend**:
+
+1. **Sign up** di [https://resend.com](https://resend.com)
+2. **Get API Key** dari dashboard (format: `re_xxxxx`)
+3. **Set di .env**:
+   ```env
+   RESEND_API_KEY=re_xxxxxxxxx    # Ganti dengan API key Anda
+   OTP_FROM_EMAIL=noreply@resend.dev  # Atau custom domain
+   OTP_EXPIRATION_MINUTES=15
+   OTP_MAX_ATTEMPTS=5
+   ```
+
+**Detailed Setup Guide**: Lihat [docs/RESEND_SETUP.md](docs/RESEND_SETUP.md)
+
+### OTP Email Flow (dengan Resend)
+
+```
+User Registration
+    ↓
+Generate 6-digit OTP code
+    ↓
+Call send_otp_email()
+    ↓
+Resend API: POST /emails
+    ↓
+Email delivered dalam 1-2 detik
+    ↓
+User dapat email dengan OTP code
+    ↓
+User verifikasi code
+    ↓
+Account aktif ✅
+```
+
+**Email Template Example**:
+
+```
+From: noreply@resend.dev
+To: user@example.com
+Subject: Email Verification - OTP Code
+
+┌─────────────────────────────┐
+│ Your OTP Code              │
+│                             │
+│     482619                  │
+│                             │
+│ This code expires in 15     │
+│ minutes                     │
+└─────────────────────────────┘
+
+Do not share this code with anyone.
 ```
 
 ---
@@ -1085,6 +1133,38 @@ TestErrorHandling (5 tests) ✅
 ```
 
 ### Next Steps (Sprint 4 Phase 2)
+
+#### ✅ COMPLETED: Email OTP Integration (Resend API)
+
+- ✅ Added `resend` library to requirements.txt
+- ✅ Created `api/email.py` service for OTP delivery
+- ✅ Integrated OTP email sending in register endpoint
+- ✅ Integrated OTP resend email in resend-otp endpoint
+- ✅ Beautiful HTML email templates with branding
+- ✅ Error handling and logging for email failures
+- ✅ Configuration via environment variables (RESEND_API_KEY, OTP_FROM_EMAIL)
+- ✅ Documentation: [docs/RESEND_SETUP.md](docs/RESEND_SETUP.md)
+
+**How to Setup**:
+
+```bash
+# 1. Sign up at https://resend.com
+# 2. Get API key (format: re_xxxxx)
+# 3. Update .env
+RESEND_API_KEY=re_xxxxxxxxx
+OTP_FROM_EMAIL=noreply@resend.dev
+
+# 4. Test registration (OTP will be emailed)
+curl -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "testuser",
+    "email": "your-email@example.com",
+    "password": "TestPass123!"
+  }'
+```
+
+#### TODO: Async SQLAlchemy Integration
 
 1. **Async SQLAlchemy Integration**
 

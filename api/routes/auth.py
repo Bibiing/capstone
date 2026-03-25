@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from api.email import send_otp_email, send_otp_resend_notification
 from api.schemas import (
     LoginRequest,
     LoginResponse,
@@ -105,28 +106,52 @@ async def register(
     # 3. Create user with is_active=False, is_verified=False
     # 4. Generate OTP
     # 5. Save OTP to database
-    # 6. Send OTP via email (using service like SendGrid, etc)
+    # 6. Send OTP via email
 
-    # Mock response for now
-    mock_user_id = 1
-    mock_otp = "123456"
+    # Generate OTP code
+    otp_code = generate_otp()
+    otp_expiration = get_otp_expiration_time()
 
-    logger.info(
-        "User registered (mock) | username=%s | email=%s | otp=%s",
-        request.username,
-        request.email,
-        mock_otp,
+    # Send OTP via Resend API
+    email_sent = await send_otp_email(
+        to_email=request.email,
+        otp_code=otp_code,
+        settings=settings,
+        username=request.username,
     )
 
+    # Log the registration attempt
+    logger.info(
+        "User registered | username=%s | email=%s | otp_sent=%s",
+        request.username,
+        request.email,
+        email_sent,
+    )
+
+    # Build response message
+    if email_sent:
+        message = (
+            "Registration successful! "
+            "A verification code has been sent to your email. "
+            "Please check your inbox and verify within 15 minutes."
+        )
+    else:
+        # Email failed to send, but still show success for UX
+        # In production, this should trigger a retry mechanism
+        logger.warning(
+            "OTP email failed but user created | email=%s",
+            request.email,
+        )
+        message = (
+            "Registration successful, but there was an issue sending the verification email. "
+            "Please check your spam folder or request a new code."
+        )
+
     return RegisterResponse(
-        user_id=mock_user_id,
+        user_id=1,  # Mock - will come from DB
         username=request.username,
         email=request.email,
-        message=(
-            "Registration successful. "
-            "A verification code has been sent to your email. "
-            f"[MOCK] Code: {mock_otp}"
-        ),
+        message=message,
         verification_required=True,
     )
 
@@ -313,18 +338,32 @@ async def resend_otp(
     # 6. Save new OTP to database
     # 7. Send OTP via email
 
-    # Mock Implementation
-    mock_user_found = False
-    if not mock_user_found:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+    # Generate new OTP
+    new_otp = generate_otp()
+
+    # Send OTP via Resend API
+    email_sent = await send_otp_resend_notification(
+        to_email=request.email,
+        otp_code=new_otp,
+        settings=settings,
+        attempt_number=1,
+    )
+
+    logger.info(
+        "OTP resent | email=%s | sent=%s",
+        request.email,
+        email_sent,
+    )
+
+    if email_sent:
+        message = f"A new verification code has been sent to {request.email}"
+    else:
+        message = (
+            f"Verification code generation failed. "
+            f"Please try again or contact support."
         )
 
-    mock_otp = generate_otp()
-    logger.info("OTP resent (mock) | email=%s | code=%s", request.email, mock_otp)
-
     return ResendOTPResponse(
-        message=f"OTP has been resent to {request.email}. [MOCK] Code: {mock_otp}",
+        message=message,
         expires_in_minutes=settings.otp_expiration_minutes,
     )

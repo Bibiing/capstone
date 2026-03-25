@@ -32,6 +32,7 @@ bcrypt==4.0.1              # Password hashing (compatible with passlib)
 passlib==1.7.4             # Password utilities
 python-jose[cryptography]==3.3.0  # JWT token generation & validation
 python-multipart==0.0.9    # Form data parsing
+resend==1.2.0              # Email service for OTP delivery
 
 # =============================================================================
 # Dashboard (Sprint 5)

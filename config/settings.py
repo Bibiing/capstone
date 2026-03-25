@@ -168,14 +168,57 @@ class Settings(BaseSettings):
         description="w2: Active alert/threat weight in the final risk formula.",
     )
 
+    # ── Email & OTP Configuration (Resend API) ────────────────────────────────
+    resend_api_key: SecretStr = Field(
+        default=SecretStr("re_xxxxxxxxx"),
+        description=(
+            "Resend API key for sending OTP emails. "
+            "Get from: https://resend.com/api-keys (format: re_xxxxx)"
+        ),
+    )
+    otp_from_email: str = Field(
+        default="onboarding@resend.dev",
+        description="From email address for OTP emails. Must be verified in Resend.",
+    )
+    otp_expiration_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=60,
+        description="OTP code expiration time in minutes.",
+    )
+    otp_max_attempts: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Maximum failed OTP verification attempts.",
+    )
+
+    # ── JWT & Auth Configuration ──────────────────────────────────────────────
+    jwt_algorithm: str = Field(
+        default="HS256",
+        description="JWT signing algorithm (HS256 or RS256).",
+    )
+    jwt_expiration_hours: int = Field(
+        default=24,
+        ge=1,
+        le=720,
+        description="JWT access token expiration time in hours.",
+    )
+
     # ── REST API ──────────────────────────────────────────────────────────────
-    api_host: str = Field(default="0.0.0.0")
-    api_port: int = Field(default=8000, ge=1024, le=65535)
+    api_host: str = Field(default="0.0.0.0", description="FastAPI server host.")
+    api_port: int = Field(
+        default=8000, ge=1024, le=65535, description="FastAPI server port."
+    )
+    api_environment: str = Field(
+        default="development",
+        description="Environment: 'development', 'staging', or 'production'.",
+    )
     api_secret_key: SecretStr = Field(
         default=SecretStr("dev_secret_CHANGE_IN_PRODUCTION"),
         description=(
-            "Secret key for API token signing. "
-            "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            "Secret key for JWT signing. "
+            "Generate: python -c \"import secrets; print(secrets.token_hex(32))\""
         ),
     )
     api_environment: str = Field(
