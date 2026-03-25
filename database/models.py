@@ -2,6 +2,8 @@
 SQLAlchemy ORM models for the Risk Scoring Engine.
 
 Tables:
+    users           System users with authentication credentials.
+    otp_codes       One-Time Password codes for email verification.
     assets          Registered assets (CMDB) with criticality questionnaire scores.
     risk_scores     Append-only time-series of computed risk score snapshots.
     threat_state    Persists T_prev per asset for the time-decay algorithm.
@@ -20,8 +22,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Index,
@@ -30,6 +34,8 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+import enum as python_enum
 
 
 def _utcnow() -> datetime:
@@ -40,6 +46,133 @@ def _utcnow() -> datetime:
 class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
     pass
+
+
+# =============================================================================
+# User & Authentication
+# =============================================================================
+class UserRole(str, python_enum.Enum):
+    """Enumeration of user roles."""
+    ADMIN = "admin"
+    ANALYST = "analyst"
+    VIEWER = "viewer"
+
+
+class User(Base):
+    """
+    System user account with authentication credentials.
+
+    Fields:
+    - user_id: Unique identifier (UUID-like, or auto-incremented)
+    - username: Unique username for login
+    - email: Unique email address (used for OTP-based verification)
+    - password_hash: bcrypt-hashed password (never store plain text)
+    - role: User permissions level (admin, analyst, viewer)
+    - is_active: Whether account is enabled (false until email verified)
+    - is_verified: Whether email has been verified via OTP
+    - created_at, updated_at: Audit timestamps
+    """
+
+    __tablename__ = "users"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(
+        String(50), nullable=False, unique=True, index=True,
+        comment="Unique username for login."
+    )
+    email: Mapped[str] = mapped_column(
+        String(100), nullable=False, unique=True, index=True,
+        comment="Unique email address (used for OTP verification)."
+    )
+    password_hash: Mapped[str] = mapped_column(
+        String(255), nullable=False,
+        comment="bcrypt-hashed password. Never store plain text."
+    )
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, native_enum=False), nullable=False, default=UserRole.VIEWER,
+        comment="User permission level: admin, analyst, viewer."
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False,
+        comment="Account enabled after email verification."
+    )
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False,
+        comment="Email address verified via OTP."
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+    # Relationships
+    otp_codes: Mapped[list["OTPCode"]] = relationship(
+        "OTPCode", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"User(id={self.user_id}, username={self.username!r}, "
+            f"email={self.email!r}, is_verified={self.is_verified})"
+        )
+
+
+class OTPCode(Base):
+    """
+    One-Time Password (OTP) for email verification during registration.
+
+    Fields:
+    - otp_id: Primary key
+    - user_id: FK to user
+    - code: The OTP value (typically 6 digits, will be emailed)
+    - expires_at: When this OTP expires
+    - is_used: Whether this OTP has been successfully verified
+    - attempts: Count of failed verification attempts
+    - created_at: When this OTP was generated
+
+    Logic:
+    - Generate OTP on registration
+    - Email the code to user (later feature)
+    - User enters code via /verify-otp endpoint
+    - If code matches and not expired → mark is_used=true, set user.is_verified=true
+    - If max attempts exceeded → require /resend-otp
+    """
+
+    __tablename__ = "otp_codes"
+
+    otp_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    code: Mapped[str] = mapped_column(
+        String(10), nullable=False,
+        comment="OTP code (e.g., 6-digit numeric string)."
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        comment="Timestamp when this OTP becomes invalid."
+    )
+    is_used: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False,
+        comment="True once this OTP has been successfully verified."
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0,
+        comment="Count of failed verification attempts."
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    user: Mapped[User] = relationship("User", back_populates="otp_codes")
+
+    def __repr__(self) -> str:
+        return (
+            f"OTPCode(id={self.otp_id}, user_id={self.user_id}, "
+            f"is_used={self.is_used}, attempts={self.attempts})"
+        )
 
 
 # =============================================================================

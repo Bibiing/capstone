@@ -178,6 +178,34 @@ class Settings(BaseSettings):
             "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
         ),
     )
+    api_environment: str = Field(
+        default="development",
+        description="Deployment environment: 'development', 'staging', or 'production'.",
+    )
+
+    # ── JWT & Authentication ──────────────────────────────────────────────────
+    jwt_algorithm: str = Field(
+        default="HS256",
+        description="Algorithm for JWT token signing.",
+    )
+    jwt_expiration_hours: int = Field(
+        default=24,
+        ge=1,
+        le=720,
+        description="JWT token expiration time in hours.",
+    )
+    otp_expiration_minutes: int = Field(
+        default=15,
+        ge=5,
+        le=120,
+        description="OTP code expiration time in minutes.",
+    )
+    otp_max_attempts: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Max failed OTP verification attempts before lockout.",
+    )
 
     # ── Dashboard ─────────────────────────────────────────────────────────────
     dashboard_api_url: str = Field(

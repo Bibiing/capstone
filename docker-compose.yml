@@ -42,6 +42,29 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
 
+  # ── FastAPI Backend ──────────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: risk_scoring_api
+    restart: unless-stopped
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - '8000:8000'
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-capstone}:${POSTGRES_PASSWORD:-capstone_dev}@postgres:5432/${POSTGRES_DB:-risk_scoring}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # ── Risk Scoring Engine — uncomment in Sprint 3-4 ────────────────────────────
   # risk-engine:
   #   build: .
