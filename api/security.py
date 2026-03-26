@@ -183,9 +183,15 @@ def is_otp_expired(expires_at: datetime) -> bool:
     Check if an OTP code has expired.
 
     Args:
-        expires_at: OTP expiration datetime
+        expires_at: OTP expiration datetime (can be naive or aware)
 
     Returns:
         True if expired, False otherwise
     """
-    return datetime.now(timezone.utc) > expires_at
+    now = datetime.now(timezone.utc)
+    
+    # If expires_at is naive (from SQLite), assume it's UTC and make it aware
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    
+    return now > expires_at

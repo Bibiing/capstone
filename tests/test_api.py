@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from datetime import datetime, timedelta, timezone
 
 from api.main import app
+from api.routes.auth import get_db
 from api.security import (
     hash_password,
     verify_password,
@@ -26,6 +27,22 @@ from api.security import (
 
 # Initialize test client
 client = TestClient(app)
+
+
+# Fixture-based test client with database override
+@pytest.fixture
+def client_with_db(test_db_session):
+    """
+    Create a test client with database dependency overridden.
+    
+    This allows tests to use a fresh in-memory database for each test.
+    """
+    def override_get_db():
+        return test_db_session
+    
+    app.dependency_overrides[get_db] = override_get_db
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 # ============================================================================
@@ -209,9 +226,9 @@ class TestOTP:
 class TestAuthAPI:
     """Test authentication endpoints."""
 
-    def test_register_success(self):
+    def test_register_success(self, client_with_db):
         """Test successful user registration."""
-        response = client.post(
+        response = client_with_db.post(
             "/auth/register",
             json={
                 "username": "newuser",
@@ -227,9 +244,9 @@ class TestAuthAPI:
         assert data["email"] == "newuser@example.com"
         assert data["verification_required"] is True
 
-    def test_register_weak_password(self):
+    def test_register_weak_password(self, client_with_db):
         """Test registration with weak password."""
-        response = client.post(
+        response = client_with_db.post(
             "/auth/register",
             json={
                 "username": "newuser",
@@ -240,12 +257,12 @@ class TestAuthAPI:
 
         assert response.status_code == 400
 
-    def test_login_success(self):
-        """Test successful login."""
-        response = client.post(
+    def test_login_success(self, client_with_db, test_verified_user):
+        """Test successful login with verified user."""
+        response = client_with_db.post(
             "/auth/login",
             json={
-                "email": "test@example.com",
+                "email": "verified@example.com",
                 "password": "SecurePass123!",
             },
         )
@@ -257,9 +274,9 @@ class TestAuthAPI:
         assert data["token_type"] == "bearer"
         assert "expires_in" in data
 
-    def test_login_invalid_credentials(self):
-        """Test login with invalid credentials (mock will fail)."""
-        response = client.post(
+    def test_login_invalid_credentials(self, client_with_db):
+        """Test login with invalid credentials."""
+        response = client_with_db.post(
             "/auth/login",
             json={
                 "email": "nonexistent@example.com",
@@ -269,9 +286,9 @@ class TestAuthAPI:
 
         assert response.status_code == 401
 
-    def test_verify_otp_success(self):
+    def test_verify_otp_success(self, client_with_db, test_otp, test_user):
         """Test successful OTP verification."""
-        response = client.post(
+        response = client_with_db.post(
             "/auth/verify-otp",
             json={
                 "email": "test@example.com",
@@ -283,10 +300,11 @@ class TestAuthAPI:
         data = response.json()
         assert data["is_verified"] is True
         assert "user_id" in data
+        assert data["user_id"] == test_user.user_id
 
-    def test_verify_otp_invalid_email(self):
+    def test_verify_otp_invalid_email(self, client_with_db):
         """Test OTP verification with nonexistent email."""
-        response = client.post(
+        response = client_with_db.post(
             "/auth/verify-otp",
             json={
                 "email": "nonexistent@example.com",
@@ -296,9 +314,9 @@ class TestAuthAPI:
 
         assert response.status_code == 404
 
-    def test_resend_otp_success(self):
+    def test_resend_otp_success(self, client_with_db, test_user):
         """Test successful OTP resend."""
-        response = client.post(
+        response = client_with_db.post(
             "/auth/resend-otp",
             json={
                 "email": "test@example.com",

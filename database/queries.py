@@ -25,7 +25,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from database.models import Asset, RiskScore, SCASnapshot, ThreatState
+from database.models import Asset, OTPCode, RiskScore, SCASnapshot, ThreatState, User
 
 logger = logging.getLogger(__name__)
 
@@ -252,3 +252,107 @@ def get_latest_sca(session: Session, asset_id: str) -> Optional[SCASnapshot]:
         .order_by(desc(SCASnapshot.scanned_at))
         .limit(1)
     ).scalar_one_or_none()
+
+
+# =============================================================================
+# User & Authentication Queries
+# =============================================================================
+
+def create_user(session: Session, user: User) -> User:
+    """
+    Create a new user account.
+    
+    Args:
+        user: User instance with username, email, password_hash, role set
+        
+    Returns:
+        The persisted User instance with user_id assigned
+    """
+    session.add(user)
+    session.flush()  # Flush to get user_id before commit
+    logger.debug("User created | user_id=%d | email=%s", user.user_id, user.email)
+    return user
+
+
+def get_user_by_email(session: Session, email: str) -> Optional[User]:
+    """Return a user by email, or None if not found."""
+    return session.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+
+
+def get_user_by_username(session: Session, username: str) -> Optional[User]:
+    """Return a user by username, or None if not found."""
+    return session.execute(
+        select(User).where(User.username == username)
+    ).scalar_one_or_none()
+
+
+def get_user_by_id(session: Session, user_id: int) -> Optional[User]:
+    """Return a user by ID, or None if not found."""
+    return session.get(User, user_id)
+
+
+def update_user_verified(session: Session, user_id: int) -> None:
+    """Mark a user as verified and active after OTP confirmation."""
+    user = session.get(User, user_id)
+    if user:
+        user.is_verified = True
+        user.is_active = True
+        logger.debug("User verified and activated | user_id=%d", user_id)
+
+
+def create_otp(session: Session, otp: OTPCode) -> OTPCode:
+    """
+    Create a new OTP code for a user.
+    
+    Args:
+        otp: OTPCode instance with user_id, code, expires_at set
+        
+    Returns:
+        The persisted OTPCode instance with otp_id assigned
+    """
+    session.add(otp)
+    session.flush()  # Flush to get otp_id before commit
+    logger.debug("OTP created | otp_id=%d | user_id=%d", otp.otp_id, otp.user_id)
+    return otp
+
+
+def get_pending_otp(session: Session, user_id: int) -> Optional[OTPCode]:
+    """
+    Return the latest unused OTP for a user that hasn't expired.
+    
+    Returns None if no valid OTP exists.
+    """
+    return session.execute(
+        select(OTPCode)
+        .where(
+            OTPCode.user_id == user_id,
+            OTPCode.is_used == False,
+            OTPCode.expires_at > datetime.now(timezone.utc),
+        )
+        .order_by(desc(OTPCode.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def mark_otp_as_used(session: Session, otp_id: int) -> None:
+    """Mark an OTP as used after successful verification."""
+    otp = session.get(OTPCode, otp_id)
+    if otp:
+        otp.is_used = True
+        logger.debug("OTP marked as used | otp_id=%d", otp_id)
+
+
+def increment_otp_attempts(session: Session, otp_id: int) -> int:
+    """
+    Increment the failed attempt counter for an OTP code.
+    
+    Returns the new attempt count.
+    """
+    otp = session.get(OTPCode, otp_id)
+    if otp:
+        otp.attempts += 1
+        logger.debug("OTP attempt incremented | otp_id=%d | attempts=%d", otp_id, otp.attempts)
+        return otp.attempts
+    return 0

@@ -109,3 +109,126 @@ def mock_wazuh_client() -> MagicMock:
 def fixed_utc_now() -> datetime:
     """Return a fixed UTC datetime for deterministic time-based tests."""
     return datetime(2026, 3, 13, 10, 0, 0, tzinfo=timezone.utc)
+
+
+# =============================================================================
+# Database Fixtures
+# =============================================================================
+
+@pytest.fixture
+def test_db_session():
+    """
+    Provide a fresh test database session for each test.
+    
+    Uses a temporary file-based SQLite database for better threading support.
+    Creates all tables, yields the session for the test, then cleans up.
+    """
+    import tempfile
+    import os
+    from sqlalchemy import create_engine, inspect
+    from sqlalchemy.orm import sessionmaker
+    from database.models import Base
+    
+    # Create a temporary directory and database file
+    temp_dir = tempfile.mkdtemp()
+    db_file = os.path.join(temp_dir, "test.db")
+    database_url = f"sqlite:///{db_file}"
+    
+    # Create engine with SQLite for tests
+    engine = create_engine(
+        database_url,
+        echo=False,
+        connect_args={"check_same_thread": False}
+    )
+    
+    # Create all tables
+    Base.metadata.create_all(engine)
+    
+    # Verify tables were created
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    assert "users" in tables, f"Tables not created! Found: {tables}"
+    
+    # Create session factory
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = SessionLocal()
+    
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+        # Clean up temp file
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def test_user(test_db_session):
+    """
+    Create a test user in the database.
+    
+    Returns a User instance with known credentials for testing auth endpoints.
+    """
+    from api.security import hash_password
+    from database.models import User, UserRole
+    
+    user = User(
+        username="testuser",
+        email="test@example.com",
+        password_hash=hash_password("SecurePass123!"),
+        role=UserRole.ANALYST,
+        is_active=False,
+        is_verified=False,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+    
+    return user
+
+
+@pytest.fixture
+def test_verified_user(test_db_session):
+    """
+    Create a verified test user (can login immediately).
+    """
+    from api.security import hash_password
+    from database.models import User, UserRole
+    
+    user = User(
+        username="verified_user",
+        email="verified@example.com",
+        password_hash=hash_password("SecurePass123!"),
+        role=UserRole.ANALYST,
+        is_active=True,
+        is_verified=True,
+    )
+    test_db_session.add(user)
+    test_db_session.commit()
+    
+    return user
+
+
+@pytest.fixture
+def test_otp(test_db_session, test_user):
+    """
+    Create a valid OTP code for test user.
+    """
+    from database.models import OTPCode
+    from api.security import get_otp_expiration_time
+    from datetime import datetime, timedelta, timezone
+    
+    # Use timezone-aware datetime for OTP expiration
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+    
+    otp = OTPCode(
+        user_id=test_user.user_id,
+        code="123456",
+        expires_at=expires_at,
+        is_used=False,
+        attempts=0,
+    )
+    test_db_session.add(otp)
+    test_db_session.commit()
+    
+    return otp
