@@ -217,10 +217,8 @@ async def root() -> dict:
             ],
             "assets": [
                 "GET /assets",
-                "POST /assets",
+                "POST /assets/sync/agents",
                 "GET /assets/{asset_id}",
-                "PUT /assets/{asset_id}",
-                "DELETE /assets/{asset_id}",
             ],
             "scores": [
                 "GET /scores/latest",

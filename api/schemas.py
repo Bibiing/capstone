@@ -221,40 +221,9 @@ class ResendOTPResponse(BaseModel):
 # Asset Schemas
 # =============================================================================
 class AssetCreate(BaseModel):
-    """Request to create a new asset."""
+    """Deprecated: asset creation is handled by Wazuh sync."""
 
-    hostname: str = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="Asset hostname",
-        example="db-server-01",
-    )
-    wazuh_agent_id: Optional[str] = Field(
-        None,
-        max_length=10,
-        description="Wazuh agent ID (if linked)",
-        example="001",
-    )
-    ip_address: Optional[str] = Field(
-        None,
-        max_length=45,
-        description="IPv4 or IPv6 address",
-        example="192.168.1.10",
-    )
-    likert_score: float = Field(
-        ...,
-        ge=1.0,
-        le=5.0,
-        description="Business impact score (1.0=not critical, 5.0=most critical)",
-        example=4.5,
-    )
-    description: Optional[str] = Field(
-        None,
-        max_length=500,
-        description="Asset description",
-        example="Primary database server for customer accounts",
-    )
+    name: str
 
     class Config:
         json_schema_extra = {
@@ -269,12 +238,9 @@ class AssetCreate(BaseModel):
 
 
 class AssetUpdate(BaseModel):
-    """Request to update an asset (all fields optional)."""
+    """Request to update mutable asset properties."""
 
-    hostname: Optional[str] = Field(None, max_length=100)
-    ip_address: Optional[str] = Field(None, max_length=45)
-    likert_score: Optional[float] = Field(None, ge=1.0, le=5.0)
-    description: Optional[str] = Field(None, max_length=500)
+    impact_score: Optional[float] = Field(None, ge=0.0, le=1.0)
 
     class Config:
         json_schema_extra = {
@@ -289,12 +255,12 @@ class AssetResponse(BaseModel):
     """Response containing asset information."""
 
     asset_id: str
-    hostname: str
-    wazuh_agent_id: Optional[str]
+    agent_id: str
+    name: str
     ip_address: Optional[str]
-    likert_score: float
-    impact: float = Field(..., description="Normalized impact (I = likert_score / 5.0)")
-    description: Optional[str]
+    os_type: Optional[str]
+    status: Optional[str]
+    impact_score: Optional[float]
     created_at: datetime
     updated_at: datetime
 
@@ -303,12 +269,12 @@ class AssetResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "asset_id": "asset-001",
-                "hostname": "db-prod-01",
-                "wazuh_agent_id": "001",
+                "agent_id": "001",
+                "name": "db-prod-01",
                 "ip_address": "192.168.1.100",
-                "likert_score": 5.0,
-                "impact": 1.0,
-                "description": "Production customer database (critical)",
+                "os_type": "linux",
+                "status": "active",
+                "impact_score": 1.0,
                 "created_at": "2026-03-13T08:00:00Z",
                 "updated_at": "2026-03-13T08:00:00Z",
             }
@@ -327,10 +293,9 @@ class AssetListResponse(BaseModel):
                 "total": 7,
                 "assets": [
                     {
-                        "asset_id": "asset-001",
-                        "hostname": "db-prod-01",
-                        "likert_score": 5.0,
-                        "impact": 1.0,
+                        "asset_id": "d4a298af-7db9-4b89-85e3-a9ab5814120f",
+                        "agent_id": "001",
+                        "name": "db-prod-01",
                     }
                 ],
             }

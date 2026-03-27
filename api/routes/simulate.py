@@ -14,7 +14,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from api.dependencies.db import get_db_session
-from api.routes.scores import _score_history, _asset_names
 from api.services.scoring_engine import calculate_r, classify_severity
 from api.schemas import (
     RiskScoreBreakdown,
@@ -81,12 +80,18 @@ async def simulate_spike(
 
         latest = queries.get_latest_score(db, asset_uuid)
         if latest is None:
-            continue
+            base_i = asset.impact_score if asset.impact_score is not None else 0.5
+            base_v = 50.0
+            base_period_start = now
+        else:
+            base_i = latest.score_i
+            base_v = latest.score_v
+            base_period_start = latest.period_end
 
         new_threat = min(request.threat_value, 100.0)
         new_risk_score = calculate_r(
-            impact_i=latest.score_i,
-            vulnerability_v=latest.score_v,
+            impact_i=base_i,
+            vulnerability_v=base_v,
             threat_t=new_threat,
             w1=settings.weight_vulnerability,
             w2=settings.weight_threat,
@@ -95,11 +100,11 @@ async def simulate_spike(
         db.add(
             RiskScore(
                 asset_id=asset.id,
-                score_i=latest.score_i,
-                score_v=latest.score_v,
+                score_i=base_i,
+                score_v=base_v,
                 score_t=new_threat,
                 score_r=new_risk_score,
-                period_start=latest.period_end,
+                period_start=base_period_start,
                 period_end=now,
                 calculated_at=now,
             )
@@ -114,18 +119,14 @@ async def simulate_spike(
                 risk_score=round(new_risk_score, 2),
                 severity=classify_severity(new_risk_score),
                 breakdown=RiskScoreBreakdown(
-                    impact=latest.score_i,
-                    vulnerability=latest.score_v,
+                    impact=base_i,
+                    vulnerability=base_v,
                     threat=new_threat,
                     w1=settings.weight_vulnerability,
                     w2=settings.weight_threat,
                 ),
             )
         )
-
-    # Legacy fallback flow for non-UUID IDs used by existing simulation tests.
-    fallback_assets = [aid for aid in request.asset_ids if aid in _score_history]
-    valid_assets.extend(fallback_assets)
 
     if not valid_assets:
         raise HTTPException(
@@ -140,69 +141,6 @@ async def simulate_spike(
             invalid_assets,
             request.reason or "N/A",
         )
-
-    for asset_id in fallback_assets:
-        history = _score_history[asset_id]
-        last_score = history[0] if history else None
-
-        if not last_score:
-            continue
-
-        # Calculate new threat value
-        # In production, this would interact with the scoring engine
-        new_threat = min(request.threat_value, 100.0)  # Cap at 100
-
-        # Recalculate risk score with new threat value
-        I = last_score["impact"]
-        V = last_score["vulnerability"]
-        w1 = last_score["w1"]
-        w2 = last_score["w2"]
-        new_risk_score = I * (w1 * V + w2 * new_threat)
-        new_risk_score = min(max(new_risk_score, 0.0), 100.0)
-
-        # Determine severity
-        if new_risk_score >= 90:
-            severity = "Critical"
-        elif new_risk_score >= 70:
-            severity = "High"
-        elif new_risk_score >= 40:
-            severity = "Medium"
-        else:
-            severity = "Low"
-
-        # Create new score record
-        new_score_entry = {
-            "timestamp": now,
-            "risk_score": new_risk_score,
-            "severity": severity,
-            "impact": I,
-            "vulnerability": V,
-            "threat": new_threat,
-            "w1": w1,
-            "w2": w2,
-        }
-
-        # Prepend to history (most recent first)
-        history.insert(0, new_score_entry)
-
-        # Create response
-        breakdown = RiskScoreBreakdown(
-            impact=I,
-            vulnerability=V,
-            threat=new_threat,
-            w1=w1,
-            w2=w2,
-        )
-
-        score_response = RiskScoreResponse(
-            asset_id=asset_id,
-            hostname=_asset_names.get(asset_id, asset_id),
-            timestamp=now,
-            risk_score=round(new_risk_score, 2),
-            severity=severity,
-            breakdown=breakdown,
-        )
-        new_scores.append(score_response)
 
     logger.info(
         "Threat spike simulated | affected=%d | reason=%s | threat=%.1f",
@@ -265,12 +203,18 @@ async def simulate_remediation(
 
         latest = queries.get_latest_score(db, asset_uuid)
         if latest is None:
-            continue
+            base_i = asset.impact_score if asset.impact_score is not None else 0.5
+            base_v = 50.0
+            base_period_start = now
+        else:
+            base_i = latest.score_i
+            base_v = latest.score_v
+            base_period_start = latest.period_end
 
         new_threat = 0.0
         new_risk_score = calculate_r(
-            impact_i=latest.score_i,
-            vulnerability_v=latest.score_v,
+            impact_i=base_i,
+            vulnerability_v=base_v,
             threat_t=new_threat,
             w1=settings.weight_vulnerability,
             w2=settings.weight_threat,
@@ -279,11 +223,11 @@ async def simulate_remediation(
         db.add(
             RiskScore(
                 asset_id=asset.id,
-                score_i=latest.score_i,
-                score_v=latest.score_v,
+                score_i=base_i,
+                score_v=base_v,
                 score_t=new_threat,
                 score_r=new_risk_score,
-                period_start=latest.period_end,
+                period_start=base_period_start,
                 period_end=now,
                 calculated_at=now,
             )
@@ -298,18 +242,14 @@ async def simulate_remediation(
                 risk_score=round(new_risk_score, 2),
                 severity=classify_severity(new_risk_score),
                 breakdown=RiskScoreBreakdown(
-                    impact=latest.score_i,
-                    vulnerability=latest.score_v,
+                    impact=base_i,
+                    vulnerability=base_v,
                     threat=new_threat,
                     w1=settings.weight_vulnerability,
                     w2=settings.weight_threat,
                 ),
             )
         )
-
-    # Legacy fallback flow for non-UUID IDs used by existing simulation tests.
-    fallback_assets = [aid for aid in request.asset_ids if aid in _score_history]
-    valid_assets.extend(fallback_assets)
 
     if not valid_assets:
         raise HTTPException(
@@ -323,68 +263,6 @@ async def simulate_remediation(
             "Some assets not found in simulation | remediation | invalid=%s",
             invalid_assets,
         )
-
-    for asset_id in fallback_assets:
-        history = _score_history[asset_id]
-        last_score = history[0] if history else None
-
-        if not last_score:
-            continue
-
-        # Reset threat to 0 (remediation complete)
-        I = last_score["impact"]
-        V = last_score["vulnerability"]
-        w1 = last_score["w1"]
-        w2 = last_score["w2"]
-        new_threat = 0.0
-
-        # Recalculate risk score with threat = 0
-        new_risk_score = I * (w1 * V + w2 * new_threat)
-        new_risk_score = min(max(new_risk_score, 0.0), 100.0)
-
-        # Determine severity
-        if new_risk_score >= 90:
-            severity = "Critical"
-        elif new_risk_score >= 70:
-            severity = "High"
-        elif new_risk_score >= 40:
-            severity = "Medium"
-        else:
-            severity = "Low"
-
-        # Create new score record
-        new_score_entry = {
-            "timestamp": now,
-            "risk_score": new_risk_score,
-            "severity": severity,
-            "impact": I,
-            "vulnerability": V,
-            "threat": new_threat,
-            "w1": w1,
-            "w2": w2,
-        }
-
-        # Prepend to history
-        history.insert(0, new_score_entry)
-
-        # Create response
-        breakdown = RiskScoreBreakdown(
-            impact=I,
-            vulnerability=V,
-            threat=new_threat,
-            w1=w1,
-            w2=w2,
-        )
-
-        score_response = RiskScoreResponse(
-            asset_id=asset_id,
-            hostname=_asset_names.get(asset_id, asset_id),
-            timestamp=now,
-            risk_score=round(new_risk_score, 2),
-            severity=severity,
-            breakdown=breakdown,
-        )
-        new_scores.append(score_response)
 
     logger.info(
         "Threat remediation simulated | affected=%d | threat_reset_to=0.0",
