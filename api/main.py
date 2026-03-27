@@ -190,6 +190,10 @@ async def root() -> dict:
                 "POST /auth/verify-otp",
                 "POST /auth/resend-otp",
             ],
+            "ingestion": [
+                "POST /ingest/agents",
+                "POST /ingest/alerts",
+            ],  
             "assets": [
                 "GET /assets",
                 "POST /assets",
@@ -215,14 +219,14 @@ async def root() -> dict:
 # ============================================================================
 
 # Import route routers
-from api.routes import auth, assets, scores, simulate
+from api.routes import auth, assets, ingestion, scores, simulate
 
 # Mount routes
 app.include_router(auth.router)
 app.include_router(assets.router)
 app.include_router(scores.router)
 app.include_router(simulate.router)
-
+app.include_router(ingestion.router)
 
 logger.info(
     "FastAPI application initialized | environment=%s | docs=/docs",
