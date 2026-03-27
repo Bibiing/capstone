@@ -87,8 +87,8 @@ class IngestionPipeline:
         persistence_service: Optional[PersistenceService] = None,
     ) -> None:
         self._asset_service = asset_service or AssetService()
-        self._alert_fetcher = alert_fetcher or AlertFetcher()
-        self._sca_fetcher = sca_fetcher or SCAFetcher()
+        self._alert_fetcher = alert_fetcher or AlertFetcher.from_settings()
+        self._sca_fetcher = sca_fetcher or SCAFetcher.from_settings()
         self._risk_builder = risk_builder or RiskContextBuilder()
         self._persistence = persistence_service or PersistenceService()
         

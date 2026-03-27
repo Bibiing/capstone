@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from ingestion.pipeline import IngestionPipeline, PipelineStats
 from ingestion.scheduler import get_scheduler, SchedulerConfig
@@ -24,6 +25,13 @@ from database import queries
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion", tags=["ingestion"])
+
+
+# Database session dependency
+def get_db() -> Session:
+    """Get database session from connection pool."""
+    with get_session() as session:
+        yield session
 
 
 # ========== Models ==========
@@ -173,7 +181,7 @@ async def health_check() -> HealthCheckResponse:
 @router.get("/scores/latest")
 async def get_latest_risk_scores(
     limit: int = Query(10, ge=1, le=100),
-    session=Depends(get_session),
+    session: Session = Depends(get_db),
 ) -> RiskLeaderboardResponse:
     """
     Get latest risk scores sorted by severity.
@@ -185,8 +193,9 @@ async def get_latest_risk_scores(
         Leaderboard of riskiest assets
     """
     try:
-        # Get latest risk scores
-        risk_scores = queries.get_latest_risk_scores(session, limit=limit)
+        # Get all latest risk scores and limit
+        all_scores = queries.get_all_latest_scores(session)
+        risk_scores = all_scores[:limit]
         
         assets_response = []
         for risk in risk_scores:
@@ -201,7 +210,7 @@ async def get_latest_risk_scores(
                         "vulnerability": float(risk.vulnerability_component or 0),
                         "impact": float(risk.impact_component or 0),
                     },
-                    timestamp=risk.calculated_at.isoformat() if risk.calculated_at else None,
+                    timestamp=risk.timestamp.isoformat() if risk.timestamp else None,
                 )
             )
         
@@ -218,7 +227,7 @@ async def get_latest_risk_scores(
 @router.get("/scores/asset/{asset_id}")
 async def get_asset_risk_score(
     asset_id: str,
-    session=Depends(get_session),
+    session: Session = Depends(get_db),
 ) -> RiskScoreResponse:
     """
     Get latest risk score for a specific asset.
@@ -231,7 +240,7 @@ async def get_asset_risk_score(
     """
     try:
         # Get latest risk score for asset
-        risk = queries.get_latest_risk_score_for_asset(session, asset_id)
+        risk = queries.get_latest_score(session, asset_id)
         
         if not risk:
             raise HTTPException(status_code=404, detail=f"No risk score found for asset {asset_id}")
@@ -246,7 +255,7 @@ async def get_asset_risk_score(
                 "vulnerability": float(risk.vulnerability_component or 0),
                 "impact": float(risk.impact_component or 0),
             },
-            timestamp=risk.calculated_at.isoformat() if risk.calculated_at else None,
+            timestamp=risk.timestamp.isoformat() if risk.timestamp else None,
         )
         
     except Exception as exc:
@@ -258,7 +267,7 @@ async def get_asset_risk_score(
 async def get_asset_risk_trend(
     asset_id: str,
     days: int = Query(7, ge=1, le=90),
-    session=Depends(get_session),
+    session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
     Get risk score trend for an asset over time.
@@ -272,14 +281,14 @@ async def get_asset_risk_trend(
     """
     try:
         # Get risk score history
-        history = queries.get_risk_score_history(session, asset_id, days=days)
+        history = queries.get_score_trend(session, asset_id, hours=days*24)
         
         if not history:
             raise HTTPException(status_code=404, detail=f"No risk history found for asset {asset_id}")
         
         scores = [
             {
-                "timestamp": score.calculated_at.isoformat() if score.calculated_at else None,
+                "timestamp": score.timestamp.isoformat() if score.timestamp else None,
                 "risk_score": float(score.risk_score),
                 "severity": score.severity,
             }
