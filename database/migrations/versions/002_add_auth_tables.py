@@ -21,9 +21,8 @@ depends_on = None
 
 class UserRole(str, python_enum.Enum):
     """User role enumeration."""
-    ADMIN = "admin"
-    ANALYST = "analyst"
-    VIEWER = "viewer"
+    CISO = "CISO"
+    MANAJEMEN = "Manajemen"
 
 
 def upgrade() -> None:
@@ -62,8 +61,8 @@ def upgrade() -> None:
             "role",
             user_role_enum,
             nullable=False,
-            server_default="viewer",
-            comment="User permission level: admin, analyst, viewer.",
+            server_default="Manajemen",
+            comment="User permission level: CISO, Manajemen.",
         ),
         sa.Column(
             "is_active",

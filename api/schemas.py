@@ -11,9 +11,17 @@ Organized by feature:
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
+
+
+class AuthRole(str, Enum):
+    """Allowed roles for authentication."""
+
+    CISO = "CISO"
+    MANAJEMEN = "Manajemen"
 
 
 # =============================================================================
@@ -63,13 +71,19 @@ class RegisterRequest(BaseModel):
         description="Password (min 8 chars; must include uppercase, lowercase, digit, special char)",
         example="SecurePass123!",
     )
+    role: AuthRole = Field(
+        ...,
+        description="User role. Allowed values: CISO, Manajemen",
+        example="Manajemen",
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "username": "analyst_jane",
+                "username": "jane_manager",
                 "email": "jane.doe@bank.com",
                 "password": "MySecurePassword123!",
+                "role": "Manajemen",
             }
         }
 
@@ -80,6 +94,7 @@ class RegisterResponse(BaseModel):
     user_id: int = Field(..., description="Newly created user ID")
     username: str
     email: str
+    role: AuthRole
     message: str = Field(default="Registration successful. Please verify your email using the OTP sent.")
     verification_required: bool = Field(default=True)
 
@@ -87,8 +102,9 @@ class RegisterResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "user_id": 1,
-                "username": "analyst_jane",
+                "username": "jane_manager",
                 "email": "jane.doe@bank.com",
+                "role": "Manajemen",
                 "message": "Registration successful. Please verify your email using the OTP sent.",
                 "verification_required": True,
             }
@@ -116,7 +132,7 @@ class LoginResponse(BaseModel):
     user_id: int
     username: str
     email: str
-    role: str = Field(..., description="User role: admin, analyst, viewer")
+    role: AuthRole = Field(..., description="User role: CISO or Manajemen")
     access_token: str = Field(..., description="JWT bearer token for API authentication")
     token_type: str = Field(default="bearer", description="Token type (always 'bearer')")
     expires_in: int = Field(..., description="Token expiration time in seconds")
@@ -125,9 +141,9 @@ class LoginResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "user_id": 1,
-                "username": "analyst_jane",
+                "username": "jane_manager",
                 "email": "jane.doe@bank.com",
-                "role": "analyst",
+                "role": "Manajemen",
                 "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
                 "token_type": "bearer",
                 "expires_in": 86400,

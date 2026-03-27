@@ -17,11 +17,44 @@ Usage:
 """
 
 import logging
+from asyncio import sleep, to_thread
 from typing import Optional
 
 import resend
 
 logger = logging.getLogger(__name__)
+
+
+async def _send_email_with_retry(payload: dict, settings, event: str) -> bool:
+    """Send email with bounded retries and exponential backoff."""
+    max_attempts = settings.otp_email_max_retries
+    base_delay = settings.otp_email_retry_delay_seconds
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = await to_thread(resend.Emails.send, payload)
+            email_id = getattr(response, "id", None)
+            logger.info(
+                "Email delivery success | event=%s | to=%s | attempt=%d | email_id=%s",
+                event,
+                payload.get("to"),
+                attempt,
+                email_id,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Email delivery failed | event=%s | to=%s | attempt=%d/%d | error=%s",
+                event,
+                payload.get("to"),
+                attempt,
+                max_attempts,
+                str(exc),
+            )
+            if attempt < max_attempts:
+                await sleep(base_delay * (2 ** (attempt - 1)))
+
+    return False
 
 
 async def send_otp_email(
@@ -116,27 +149,14 @@ async def send_otp_email(
         </html>
         """
 
-        # Send email via Resend API
-        response = resend.Emails.send(
-            {
-                "from": settings.otp_from_email,
-                "to": to_email,
-                "subject": subject,
-                "html": html_content,
-            }
-        )
+        payload = {
+            "from": settings.otp_from_email,
+            "to": to_email,
+            "subject": subject,
+            "html": html_content,
+        }
 
-        # Log success with email ID
-        if response and hasattr(response, "id"):
-            logger.info(
-                "OTP email sent successfully | to=%s | email_id=%s",
-                to_email,
-                response.id,
-            )
-            return True
-        else:
-            logger.warning("OTP email response missing ID | to=%s | response=%s", to_email, response)
-            return False
+        return await _send_email_with_retry(payload, settings, event="otp_register")
 
     except Exception as e:
         # Log error details for debugging
@@ -213,25 +233,14 @@ async def send_otp_resend_notification(
         </html>
         """
 
-        response = resend.Emails.send(
-            {
-                "from": settings.otp_from_email,
-                "to": to_email,
-                "subject": subject,
-                "html": html_content,
-            }
-        )
+        payload = {
+            "from": settings.otp_from_email,
+            "to": to_email,
+            "subject": subject,
+            "html": html_content,
+        }
 
-        if response and hasattr(response, "id"):
-            logger.info(
-                "OTP resend email sent | to=%s | attempt=%d | email_id=%s",
-                to_email,
-                attempt_number,
-                response.id,
-            )
-            return True
-        else:
-            return False
+        return await _send_email_with_retry(payload, settings, event="otp_resend")
 
     except Exception as e:
         logger.error(

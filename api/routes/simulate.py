@@ -8,10 +8,14 @@ Endpoints:
 
 import logging
 from datetime import datetime, timezone
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
+from api.dependencies.db import get_db_session
 from api.routes.scores import _score_history, _asset_names
+from api.services.scoring_engine import calculate_r, classify_severity
 from api.schemas import (
     RiskScoreBreakdown,
     RiskScoreResponse,
@@ -20,10 +24,14 @@ from api.schemas import (
     SimulateRemediationRequest,
     SimulateRemediationResponse,
 )
+from config.settings import get_settings
+from database import queries
+from database.models import RiskScore
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/simulate", tags=["Simulation"])
+settings = get_settings()
 
 
 # ============================================================================
@@ -37,7 +45,10 @@ router = APIRouter(prefix="/simulate", tags=["Simulation"])
     summary="Simulate threat spike",
     description="Inject a simulated security threat spike into selected assets.",
 )
-async def simulate_spike(request: SimulateSpikeRequest) -> SimulateSpikeResponse:
+async def simulate_spike(
+    request: SimulateSpikeRequest,
+    db: Session = Depends(get_db_session),
+) -> SimulateSpikeResponse:
     """
     Simulate a threat spike (e.g., brute force attack, malware detection).
 
@@ -53,8 +64,69 @@ async def simulate_spike(request: SimulateSpikeRequest) -> SimulateSpikeResponse
     Raises:
         HTTPException 400: If asset IDs not found
     """
-    # Validate assets exist
-    valid_assets = [aid for aid in request.asset_ids if aid in _score_history]
+    new_scores = []
+    now = datetime.now(timezone.utc)
+    valid_assets = []
+
+    # DB-first flow: UUID asset IDs
+    for input_asset_id in request.asset_ids:
+        try:
+            asset_uuid = UUID(input_asset_id)
+        except ValueError:
+            continue
+
+        asset = queries.get_asset_by_id(db, asset_uuid)
+        if asset is None:
+            continue
+
+        latest = queries.get_latest_score(db, asset_uuid)
+        if latest is None:
+            continue
+
+        new_threat = min(request.threat_value, 100.0)
+        new_risk_score = calculate_r(
+            impact_i=latest.score_i,
+            vulnerability_v=latest.score_v,
+            threat_t=new_threat,
+            w1=settings.weight_vulnerability,
+            w2=settings.weight_threat,
+        )
+
+        db.add(
+            RiskScore(
+                asset_id=asset.id,
+                score_i=latest.score_i,
+                score_v=latest.score_v,
+                score_t=new_threat,
+                score_r=new_risk_score,
+                period_start=latest.period_end,
+                period_end=now,
+                calculated_at=now,
+            )
+        )
+
+        valid_assets.append(input_asset_id)
+        new_scores.append(
+            RiskScoreResponse(
+                asset_id=str(asset.id),
+                hostname=asset.name,
+                timestamp=now,
+                risk_score=round(new_risk_score, 2),
+                severity=classify_severity(new_risk_score),
+                breakdown=RiskScoreBreakdown(
+                    impact=latest.score_i,
+                    vulnerability=latest.score_v,
+                    threat=new_threat,
+                    w1=settings.weight_vulnerability,
+                    w2=settings.weight_threat,
+                ),
+            )
+        )
+
+    # Legacy fallback flow for non-UUID IDs used by existing simulation tests.
+    fallback_assets = [aid for aid in request.asset_ids if aid in _score_history]
+    valid_assets.extend(fallback_assets)
+
     if not valid_assets:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -69,10 +141,7 @@ async def simulate_spike(request: SimulateSpikeRequest) -> SimulateSpikeResponse
             request.reason or "N/A",
         )
 
-    new_scores = []
-    now = datetime.now(timezone.utc)
-
-    for asset_id in valid_assets:
+    for asset_id in fallback_assets:
         history = _score_history[asset_id]
         last_score = history[0] if history else None
 
@@ -81,7 +150,6 @@ async def simulate_spike(request: SimulateSpikeRequest) -> SimulateSpikeResponse
 
         # Calculate new threat value
         # In production, this would interact with the scoring engine
-        old_threat = last_score["threat"]
         new_threat = min(request.threat_value, 100.0)  # Cap at 100
 
         # Recalculate risk score with new threat value
@@ -163,6 +231,7 @@ async def simulate_spike(request: SimulateSpikeRequest) -> SimulateSpikeResponse
 )
 async def simulate_remediation(
     request: SimulateRemediationRequest,
+    db: Session = Depends(get_db_session),
 ) -> SimulateRemediationResponse:
     """
     Simulate threat remediation (e.g., patch applied, malware removed).
@@ -179,8 +248,69 @@ async def simulate_remediation(
     Raises:
         HTTPException 400: If asset IDs not found
     """
-    # Validate assets exist
-    valid_assets = [aid for aid in request.asset_ids if aid in _score_history]
+    new_scores = []
+    now = datetime.now(timezone.utc)
+    valid_assets = []
+
+    # DB-first flow: UUID asset IDs
+    for input_asset_id in request.asset_ids:
+        try:
+            asset_uuid = UUID(input_asset_id)
+        except ValueError:
+            continue
+
+        asset = queries.get_asset_by_id(db, asset_uuid)
+        if asset is None:
+            continue
+
+        latest = queries.get_latest_score(db, asset_uuid)
+        if latest is None:
+            continue
+
+        new_threat = 0.0
+        new_risk_score = calculate_r(
+            impact_i=latest.score_i,
+            vulnerability_v=latest.score_v,
+            threat_t=new_threat,
+            w1=settings.weight_vulnerability,
+            w2=settings.weight_threat,
+        )
+
+        db.add(
+            RiskScore(
+                asset_id=asset.id,
+                score_i=latest.score_i,
+                score_v=latest.score_v,
+                score_t=new_threat,
+                score_r=new_risk_score,
+                period_start=latest.period_end,
+                period_end=now,
+                calculated_at=now,
+            )
+        )
+
+        valid_assets.append(input_asset_id)
+        new_scores.append(
+            RiskScoreResponse(
+                asset_id=str(asset.id),
+                hostname=asset.name,
+                timestamp=now,
+                risk_score=round(new_risk_score, 2),
+                severity=classify_severity(new_risk_score),
+                breakdown=RiskScoreBreakdown(
+                    impact=latest.score_i,
+                    vulnerability=latest.score_v,
+                    threat=new_threat,
+                    w1=settings.weight_vulnerability,
+                    w2=settings.weight_threat,
+                ),
+            )
+        )
+
+    # Legacy fallback flow for non-UUID IDs used by existing simulation tests.
+    fallback_assets = [aid for aid in request.asset_ids if aid in _score_history]
+    valid_assets.extend(fallback_assets)
+
     if not valid_assets:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -194,10 +324,7 @@ async def simulate_remediation(
             invalid_assets,
         )
 
-    new_scores = []
-    now = datetime.now(timezone.utc)
-
-    for asset_id in valid_assets:
+    for asset_id in fallback_assets:
         history = _score_history[asset_id]
         last_score = history[0] if history else None
 

@@ -9,10 +9,12 @@ Endpoints:
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
 
+from api.dependencies.db import get_db_session
 from api.schemas import (
     LatestScoresResponse,
     RiskScoreBreakdown,
@@ -20,10 +22,14 @@ from api.schemas import (
     TrendPointResponse,
     TrendResponse,
 )
+from api.services.scoring_engine import classify_severity
+from config.settings import get_settings
+from database import queries
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Scores"])
+settings = get_settings()
 
 # Mock score store (would be in database in production)
 _score_history: dict[str, list[dict]] = {
@@ -76,6 +82,25 @@ _asset_names = {
 }
 
 
+def _risk_score_to_response(score_row, hostname: str, asset_id: str) -> RiskScoreResponse:
+    """Map RiskScore row to API schema."""
+    breakdown = RiskScoreBreakdown(
+        impact=score_row.score_i,
+        vulnerability=score_row.score_v,
+        threat=score_row.score_t,
+        w1=settings.weight_vulnerability,
+        w2=settings.weight_threat,
+    )
+    return RiskScoreResponse(
+        asset_id=asset_id,
+        hostname=hostname,
+        timestamp=score_row.calculated_at,
+        risk_score=round(score_row.score_r, 2),
+        severity=classify_severity(score_row.score_r),
+        breakdown=breakdown,
+    )
+
+
 # ============================================================================
 # Latest Scores for All Assets
 # ============================================================================
@@ -89,6 +114,7 @@ _asset_names = {
 )
 async def get_latest_scores(
     include_summary: bool = Query(True, description="Include summary statistics"),
+    db: Session = Depends(get_db_session),
 ) -> LatestScoresResponse:
     """
     Get the latest risk scores for all registered assets.
@@ -102,41 +128,56 @@ async def get_latest_scores(
     Raises:
         HTTPException 503: If no score data available
     """
-    if not _score_history:
+    scores: list[RiskScoreResponse] = []
+    severity_counts = {"Low": 0, "Medium": 0, "High": 0, "Critical": 0}
+    all_risk_values: list[float] = []
+
+    # Primary source: database
+    latest_rows = queries.get_all_latest_scores(db)
+    if latest_rows:
+        for row in latest_rows:
+            asset = queries.get_asset_by_id(db, row.asset_id)
+            hostname = asset.name if asset else str(row.asset_id)
+            asset_id = str(row.asset_id)
+
+            response_row = _risk_score_to_response(row, hostname=hostname, asset_id=asset_id)
+            scores.append(response_row)
+            all_risk_values.append(response_row.risk_score)
+            severity_counts[response_row.severity] += 1
+
+    # Compatibility fallback until all modules consume DB-backed IDs.
+    elif _score_history:
+        for asset_id, history in _score_history.items():
+            if not history:
+                continue
+
+            latest = history[0]
+            all_risk_values.append(latest["risk_score"])
+            severity_counts[latest["severity"]] += 1
+
+            breakdown = RiskScoreBreakdown(
+                impact=latest["impact"],
+                vulnerability=latest["vulnerability"],
+                threat=latest["threat"],
+                w1=latest["w1"],
+                w2=latest["w2"],
+            )
+
+            score_response = RiskScoreResponse(
+                asset_id=asset_id,
+                hostname=_asset_names.get(asset_id, asset_id),
+                timestamp=latest["timestamp"],
+                risk_score=round(latest["risk_score"], 2),
+                severity=latest["severity"],
+                breakdown=breakdown,
+            )
+            scores.append(score_response)
+
+    else:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No risk scores available yet. Run scoring engine first.",
         )
-
-    scores = []
-    severity_counts = {"Low": 0, "Medium": 0, "High": 0, "Critical": 0}
-    all_risk_values = []
-
-    for asset_id, history in _score_history.items():
-        if not history:
-            continue
-
-        latest = history[0]  # Most recent (first in list)
-        all_risk_values.append(latest["risk_score"])
-        severity_counts[latest["severity"]] += 1
-
-        breakdown = RiskScoreBreakdown(
-            impact=latest["impact"],
-            vulnerability=latest["vulnerability"],
-            threat=latest["threat"],
-            w1=latest["w1"],
-            w2=latest["w2"],
-        )
-
-        score_response = RiskScoreResponse(
-            asset_id=asset_id,
-            hostname=_asset_names.get(asset_id, asset_id),
-            timestamp=latest["timestamp"],
-            risk_score=round(latest["risk_score"], 2),
-            severity=latest["severity"],
-            breakdown=breakdown,
-        )
-        scores.append(score_response)
 
     # Sort by risk score (highest first)
     scores.sort(key=lambda x: x.risk_score, reverse=True)
@@ -178,7 +219,10 @@ async def get_latest_scores(
     summary="Get asset risk score",
     description="Retrieve the latest risk score and breakdown for a specific asset.",
 )
-async def get_asset_score(asset_id: str) -> RiskScoreResponse:
+async def get_asset_score(
+    asset_id: str,
+    db: Session = Depends(get_db_session),
+) -> RiskScoreResponse:
     """
     Get the latest risk score for a specific asset.
 
@@ -191,6 +235,22 @@ async def get_asset_score(asset_id: str) -> RiskScoreResponse:
     Raises:
         HTTPException 404: If asset not found or has no scores
     """
+    try:
+        asset_uuid = UUID(asset_id)
+        asset = queries.get_asset_by_id(db, asset_uuid)
+        if asset is not None:
+            latest = queries.get_latest_score(db, asset_uuid)
+            if latest is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No score data found for asset '{asset_id}'",
+                )
+            logger.debug("Asset score retrieved | asset_id=%s | score=%.1f", asset_id, latest.score_r)
+            return _risk_score_to_response(latest, hostname=asset.name, asset_id=str(asset.id))
+    except ValueError:
+        # legacy id fallback
+        pass
+
     history = _score_history.get(asset_id, [])
     if not history:
         raise HTTPException(
@@ -199,7 +259,6 @@ async def get_asset_score(asset_id: str) -> RiskScoreResponse:
         )
 
     latest = history[0]
-
     breakdown = RiskScoreBreakdown(
         impact=latest["impact"],
         vulnerability=latest["vulnerability"],
@@ -207,9 +266,7 @@ async def get_asset_score(asset_id: str) -> RiskScoreResponse:
         w1=latest["w1"],
         w2=latest["w2"],
     )
-
-    logger.debug("Asset score retrieved | asset_id=%s | score=%.1f", asset_id, latest["risk_score"])
-
+    logger.debug("Asset score retrieved (fallback) | asset_id=%s | score=%.1f", asset_id, latest["risk_score"])
     return RiskScoreResponse(
         asset_id=asset_id,
         hostname=_asset_names.get(asset_id, asset_id),
@@ -234,6 +291,7 @@ async def get_asset_score(asset_id: str) -> RiskScoreResponse:
 async def get_asset_trend(
     asset_id: str,
     period: str = Query("7d", pattern="^(1d|7d|30d|90d)$", description="Time period: 1d, 7d, 30d, 90d"),
+    db: Session = Depends(get_db_session),
 ) -> TrendResponse:
     """
     Get risk score trend for a specific asset.
@@ -248,13 +306,6 @@ async def get_asset_trend(
     Raises:
         HTTPException 404: If asset not found or has no scores
     """
-    history = _score_history.get(asset_id, [])
-    if not history:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No trend data found for asset '{asset_id}'",
-        )
-
     # Parse period to hours
     period_to_hours = {
         "1d": 24,
@@ -263,6 +314,51 @@ async def get_asset_trend(
         "90d": 90 * 24,
     }
     hours = period_to_hours.get(period, 24)
+
+    try:
+        asset_uuid = UUID(asset_id)
+        asset = queries.get_asset_by_id(db, asset_uuid)
+        if asset is not None:
+            history = queries.get_score_trend(db=db, asset_id=asset_uuid, hours=hours)
+            if not history:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No trend data found for asset '{asset_id}'",
+                )
+
+            trend_data = [
+                TrendPointResponse(
+                    timestamp=point.calculated_at,
+                    risk_score=round(point.score_r, 2),
+                    severity=classify_severity(point.score_r),
+                )
+                for point in history
+            ]
+
+            logger.debug(
+                "Asset trend retrieved | asset_id=%s | period=%s | points=%d",
+                asset_id,
+                period,
+                len(trend_data),
+            )
+
+            return TrendResponse(
+                asset_id=str(asset.id),
+                hostname=asset.name,
+                period=period,
+                total_points=len(trend_data),
+                trend_data=trend_data,
+            )
+    except ValueError:
+        # legacy id fallback
+        pass
+
+    history = _score_history.get(asset_id, [])
+    if not history:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No trend data found for asset '{asset_id}'",
+        )
 
     # Filter historical data by period
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)

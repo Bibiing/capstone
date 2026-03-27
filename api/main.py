@@ -11,6 +11,7 @@ Structure:
 
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -20,12 +21,35 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.schemas import ErrorResponse, HealthCheckResponse
+from api.services.scheduler import ScoringScheduler
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application startup/shutdown resources."""
+    scheduler = None
+
+    if settings.scoring_scheduler_enabled:
+        try:
+            scheduler = ScoringScheduler()
+            scheduler.start()
+            app.state.scoring_scheduler = scheduler
+            logger.info("Background scoring scheduler enabled")
+        except Exception as exc:
+            logger.exception("Failed to start scoring scheduler: %s", exc)
+
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.scheduler.shutdown(wait=False)
+            logger.info("Background scoring scheduler stopped")
 
 app = FastAPI(
     title="Cyber Risk Scoring Engine API",
@@ -34,6 +58,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 # ============================================================================

@@ -11,20 +11,18 @@ Endpoints:
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, status
 
 from api.schemas import AssetCreate, AssetListResponse, AssetResponse, AssetUpdate
-from database.models import Asset
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
 
 # Mock in-memory asset store (will be replaced with database)
-_asset_store: dict[str, Asset] = {}
+_asset_store: dict[str, dict] = {}
 
 # Bootstrap with sample assets
 def _bootstrap_assets():
@@ -59,17 +57,16 @@ def _bootstrap_assets():
     ]
 
     for asset_data in sample_assets:
-        asset = Asset(
-            asset_id=asset_data["asset_id"],
-            hostname=asset_data["hostname"],
-            wazuh_agent_id=asset_data["wazuh_agent_id"],
-            ip_address=asset_data["ip_address"],
-            likert_score=asset_data["likert_score"],
-            description=asset_data["description"],
-            created_at=now,
-            updated_at=now,
-        )
-        _asset_store[asset.asset_id] = asset
+        _asset_store[asset_data["asset_id"]] = {
+            "asset_id": asset_data["asset_id"],
+            "hostname": asset_data["hostname"],
+            "wazuh_agent_id": asset_data["wazuh_agent_id"],
+            "ip_address": asset_data["ip_address"],
+            "likert_score": asset_data["likert_score"],
+            "description": asset_data["description"],
+            "created_at": now,
+            "updated_at": now,
+        }
 
 
 # Initialize on module load
@@ -144,7 +141,7 @@ async def create_asset(request: AssetCreate) -> AssetResponse:
     """
     # Check for duplicate hostname
     for asset in _asset_store.values():
-        if asset.hostname == request.hostname:
+        if asset["hostname"] == request.hostname:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Hostname '{request.hostname}' already exists",
@@ -155,18 +152,16 @@ async def create_asset(request: AssetCreate) -> AssetResponse:
     now = datetime.now(timezone.utc)
 
     # Create asset
-    asset = Asset(
-        asset_id=asset_id,
-        hostname=request.hostname,
-        wazuh_agent_id=request.wazuh_agent_id,
-        ip_address=request.ip_address,
-        likert_score=request.likert_score,
-        description=request.description,
-        created_at=now,
-        updated_at=now,
-    )
-
-    _asset_store[asset_id] = asset
+    _asset_store[asset_id] = {
+        "asset_id": asset_id,
+        "hostname": request.hostname,
+        "wazuh_agent_id": request.wazuh_agent_id,
+        "ip_address": request.ip_address,
+        "likert_score": request.likert_score,
+        "description": request.description,
+        "created_at": now,
+        "updated_at": now,
+    }
 
     logger.info(
         "Asset created | asset_id=%s | hostname=%s | likert=%.1f",
@@ -175,7 +170,7 @@ async def create_asset(request: AssetCreate) -> AssetResponse:
         request.likert_score,
     )
 
-    return _asset_to_response(asset)
+    return _asset_to_response(_asset_store[asset_id])
 
 
 # ============================================================================
@@ -247,9 +242,9 @@ async def update_asset(asset_id: str, request: AssetUpdate) -> AssetResponse:
         )
 
     # Check for hostname conflicts
-    if request.hostname and request.hostname != asset.hostname:
+    if request.hostname and request.hostname != asset["hostname"]:
         for other_asset in _asset_store.values():
-            if other_asset.hostname == request.hostname:
+            if other_asset["hostname"] == request.hostname:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Hostname '{request.hostname}' already exists",
@@ -257,18 +252,18 @@ async def update_asset(asset_id: str, request: AssetUpdate) -> AssetResponse:
 
     # Update fields
     if request.hostname is not None:
-        asset.hostname = request.hostname
+        asset["hostname"] = request.hostname
     if request.ip_address is not None:
-        asset.ip_address = request.ip_address
+        asset["ip_address"] = request.ip_address
     if request.likert_score is not None:
-        asset.likert_score = request.likert_score
+        asset["likert_score"] = request.likert_score
     if request.description is not None:
-        asset.description = request.description
+        asset["description"] = request.description
 
     # Update timestamp
-    asset.updated_at = datetime.now(timezone.utc)
+    asset["updated_at"] = datetime.now(timezone.utc)
 
-    logger.info("Asset updated | asset_id=%s | hostname=%s", asset_id, asset.hostname)
+    logger.info("Asset updated | asset_id=%s | hostname=%s", asset_id, asset["hostname"])
     return _asset_to_response(asset)
 
 
@@ -306,16 +301,16 @@ async def delete_asset(asset_id: str) -> None:
 # Helper Functions
 # ============================================================================
 
-def _asset_to_response(asset: Asset) -> AssetResponse:
-    """Convert Asset ORM model to response schema."""
+def _asset_to_response(asset: dict) -> AssetResponse:
+    """Convert in-memory asset dict to response schema."""
     return AssetResponse(
-        asset_id=asset.asset_id,
-        hostname=asset.hostname,
-        wazuh_agent_id=asset.wazuh_agent_id,
-        ip_address=asset.ip_address,
-        likert_score=asset.likert_score,
-        impact=asset.impact,
-        description=asset.description,
-        created_at=asset.created_at,
-        updated_at=asset.updated_at,
+        asset_id=asset["asset_id"],
+        hostname=asset["hostname"],
+        wazuh_agent_id=asset["wazuh_agent_id"],
+        ip_address=asset["ip_address"],
+        likert_score=asset["likert_score"],
+        impact=asset["likert_score"] / 5.0,
+        description=asset["description"],
+        created_at=asset["created_at"],
+        updated_at=asset["updated_at"],
     )

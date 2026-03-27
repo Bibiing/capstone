@@ -140,6 +140,10 @@ class Settings(BaseSettings):
         le=24,
         description="How often (hours) the scoring engine runs a full cycle.",
     )
+    scoring_scheduler_enabled: bool = Field(
+        default=False,
+        description="Enable background APScheduler jobs inside API process.",
+    )
     alert_lookback_hours: int = Field(
         default=1,
         ge=1,
@@ -192,6 +196,18 @@ class Settings(BaseSettings):
         le=10,
         description="Maximum failed OTP verification attempts.",
     )
+    otp_email_max_retries: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum retry attempts for OTP email delivery.",
+    )
+    otp_email_retry_delay_seconds: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=30.0,
+        description="Base delay in seconds between OTP email retries.",
+    )
 
     # ── JWT & Auth Configuration ──────────────────────────────────────────────
     jwt_algorithm: str = Field(
@@ -203,6 +219,30 @@ class Settings(BaseSettings):
         ge=1,
         le=720,
         description="JWT access token expiration time in hours.",
+    )
+    auth_register_limit_per_hour: int = Field(
+        default=10,
+        ge=1,
+        le=500,
+        description="Max register requests per email per hour.",
+    )
+    auth_login_limit_per_15m: int = Field(
+        default=30,
+        ge=1,
+        le=500,
+        description="Max login requests per email per 15 minutes.",
+    )
+    auth_verify_limit_per_15m: int = Field(
+        default=20,
+        ge=1,
+        le=500,
+        description="Max OTP verify requests per email per 15 minutes.",
+    )
+    auth_resend_limit_per_hour: int = Field(
+        default=10,
+        ge=1,
+        le=500,
+        description="Max OTP resend requests per email per hour.",
     )
 
     # ── REST API ──────────────────────────────────────────────────────────────
@@ -221,35 +261,6 @@ class Settings(BaseSettings):
             "Generate: python -c \"import secrets; print(secrets.token_hex(32))\""
         ),
     )
-    api_environment: str = Field(
-        default="development",
-        description="Deployment environment: 'development', 'staging', or 'production'.",
-    )
-
-    # ── JWT & Authentication ──────────────────────────────────────────────────
-    jwt_algorithm: str = Field(
-        default="HS256",
-        description="Algorithm for JWT token signing.",
-    )
-    jwt_expiration_hours: int = Field(
-        default=24,
-        ge=1,
-        le=720,
-        description="JWT token expiration time in hours.",
-    )
-    otp_expiration_minutes: int = Field(
-        default=15,
-        ge=5,
-        le=120,
-        description="OTP code expiration time in minutes.",
-    )
-    otp_max_attempts: int = Field(
-        default=5,
-        ge=1,
-        le=10,
-        description="Max failed OTP verification attempts before lockout.",
-    )
-
     # ── Dashboard ─────────────────────────────────────────────────────────────
     dashboard_api_url: str = Field(
         default="http://localhost:8000",

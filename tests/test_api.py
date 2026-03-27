@@ -12,6 +12,7 @@ Test modules:
 import pytest
 from fastapi.testclient import TestClient
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from api.main import app
 from api.security import (
@@ -23,6 +24,8 @@ from api.security import (
     get_otp_expiration_time,
     is_otp_expired,
 )
+from database.connection import get_session
+from database.models import OTPCode, User
 
 # Initialize test client
 client = TestClient(app)
@@ -68,6 +71,7 @@ class TestPasswordHashing:
                 "username": "testuser",
                 "email": "test@example.com",
                 "password": "NoSpecialChar123",
+                "role": "Manajemen",
             },
         )
         assert response.status_code == 400
@@ -82,7 +86,7 @@ class TestJWTToken:
         user_id = 1
         username = "testuser"
         email = "test@example.com"
-        role = "analyst"
+        role = "Manajemen"
 
         token, expires_in = create_access_token(
             user_id=user_id,
@@ -104,7 +108,7 @@ class TestJWTToken:
         user_id = 1
         username = "testuser"
         email = "test@example.com"
-        role = "analyst"
+        role = "Manajemen"
 
         token, _ = create_access_token(
             user_id=user_id,
@@ -132,7 +136,7 @@ class TestJWTToken:
         user_id = 1
         username = "testuser"
         email = "test@example.com"
-        role = "analyst"
+        role = "Manajemen"
 
         # Create token with 0 hours expiration (immediate expiry)
         token, _ = create_access_token(
@@ -209,22 +213,54 @@ class TestOTP:
 class TestAuthAPI:
     """Test authentication endpoints."""
 
-    def test_register_success(self):
-        """Test successful user registration."""
-        response = client.post(
+    @pytest.fixture(autouse=True)
+    def _mock_email_delivery(self, monkeypatch):
+        async def _email_ok(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr("api.services.auth_service.send_otp_email", _email_ok)
+        monkeypatch.setattr("api.services.auth_service.send_otp_resend_notification", _email_ok)
+
+    @staticmethod
+    def _unique_email() -> str:
+        return f"auth-{uuid4().hex[:8]}@example.com"
+
+    @staticmethod
+    def _register_user(email: str, username: str = "newuser"):
+        return client.post(
             "/auth/register",
             json={
-                "username": "newuser",
-                "email": "newuser@example.com",
+                "username": f"{username}_{uuid4().hex[:6]}",
+                "email": email,
                 "password": "SecurePass123!",
+                "role": "Manajemen",
             },
         )
+
+    @staticmethod
+    def _latest_otp_code(email: str) -> str:
+        with get_session() as session:
+            user = session.query(User).filter(User.email == email).first()
+            assert user is not None
+            otp = (
+                session.query(OTPCode)
+                .filter(OTPCode.user_id == user.user_id, OTPCode.is_used.is_(False))
+                .order_by(OTPCode.created_at.desc())
+                .first()
+            )
+            assert otp is not None
+            return otp.code
+
+    def test_register_success(self):
+        """Test successful user registration."""
+        email = self._unique_email()
+        response = self._register_user(email=email)
 
         assert response.status_code == 201
         data = response.json()
         assert "user_id" in data
-        assert data["username"] == "newuser"
-        assert data["email"] == "newuser@example.com"
+        assert data["email"] == email
+        assert data["role"] == "Manajemen"
         assert data["verification_required"] is True
 
     def test_register_weak_password(self):
@@ -235,6 +271,7 @@ class TestAuthAPI:
                 "username": "newuser",
                 "email": "newuser@example.com",
                 "password": "weakpassword",  # No uppercase, no special char
+                "role": "CISO",
             },
         )
 
@@ -242,10 +279,21 @@ class TestAuthAPI:
 
     def test_login_success(self):
         """Test successful login."""
+        email = self._unique_email()
+        register_response = self._register_user(email=email)
+        assert register_response.status_code == 201
+
+        otp_code = self._latest_otp_code(email)
+        verify_response = client.post(
+            "/auth/verify-otp",
+            json={"email": email, "otp_code": otp_code},
+        )
+        assert verify_response.status_code == 200
+
         response = client.post(
             "/auth/login",
             json={
-                "email": "test@example.com",
+                "email": email,
                 "password": "SecurePass123!",
             },
         )
@@ -271,11 +319,16 @@ class TestAuthAPI:
 
     def test_verify_otp_success(self):
         """Test successful OTP verification."""
+        email = self._unique_email()
+        register_response = self._register_user(email=email)
+        assert register_response.status_code == 201
+
+        otp_code = self._latest_otp_code(email)
         response = client.post(
             "/auth/verify-otp",
             json={
-                "email": "test@example.com",
-                "otp_code": "123456",
+                "email": email,
+                "otp_code": otp_code,
             },
         )
 
@@ -298,10 +351,14 @@ class TestAuthAPI:
 
     def test_resend_otp_success(self):
         """Test successful OTP resend."""
+        email = self._unique_email()
+        register_response = self._register_user(email=email)
+        assert register_response.status_code == 201
+
         response = client.post(
             "/auth/resend-otp",
             json={
-                "email": "test@example.com",
+                "email": email,
             },
         )
 

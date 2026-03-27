@@ -93,7 +93,7 @@ def create_access_token(
         user_id: User ID
         username: Username
         email: User email
-        role: User role (admin, analyst, viewer)
+        role: User role (CISO or Manajemen)
         expires_in_hours: Token expiration time (defaults from settings)
 
     Returns:

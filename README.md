@@ -679,9 +679,10 @@ Note: 3 auth endpoint tests fail dengan expected mock responses (401/404) sampai
 curl -X POST http://localhost:8000/auth/register \
   -H "Content-Type: application/json" \
   -d '{
-    "username": "analyst_john",
+    "username": "manager_john",
     "email": "john@bank.local",
-    "password": "SecurePass123!"
+    "password": "SecurePass123!",
+    "role": "Manajemen"
   }'
 ```
 
@@ -690,8 +691,9 @@ curl -X POST http://localhost:8000/auth/register \
 ```json
 {
   "user_id": 1,
-  "username": "analyst_john",
+  "username": "manager_john",
   "email": "john@bank.local",
+  "role": "Manajemen",
   "message": "Registration successful. Please verify your email using the OTP sent.",
   "verification_required": true
 }
@@ -715,9 +717,9 @@ curl -X POST http://localhost:8000/auth/login \
 ```json
 {
   "user_id": 1,
-  "username": "analyst_john",
+  "username": "manager_john",
   "email": "john@bank.local",
-  "role": "analyst",
+  "role": "Manajemen",
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "bearer",
   "expires_in": 86400
@@ -885,7 +887,7 @@ curl -X POST http://localhost:8000/simulate/spike \
 - [ ] Asset detail pages: breakdown T/V/I, formula transparency
 - [ ] Risk trend visualization: time-series charts
 - [ ] Simulation interface: live spike/remediation testing
-- [ ] Role-based access control (admin, analyst, viewer)
+- [ ] Role-based access control (CISO, Manajemen)
 - [ ] Email service integration (SendGrid/AWS SES)
 - [ ] Rate limiting on auth endpoints
 - [ ] **DoD**: Dashboard fully functional, RBAC enforced, 100% test passing
@@ -1042,7 +1044,7 @@ CREATE TABLE users (
   username       VARCHAR(50) NOT NULL UNIQUE,
   email          VARCHAR(100) NOT NULL UNIQUE,
   password_hash  VARCHAR(255) NOT NULL,
-  role           VARCHAR(20) DEFAULT 'viewer',  -- admin|analyst|viewer
+  role           VARCHAR(20) DEFAULT 'Manajemen',  -- CISO|Manajemen
   is_active      BOOLEAN DEFAULT false,
   is_verified    BOOLEAN DEFAULT false,
   created_at     TIMESTAMPTZ DEFAULT NOW(),
