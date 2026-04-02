@@ -14,12 +14,16 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, status
 
 from api.schemas import (
+    AutoCalculateScoreRequest,
+    CalculateScoreRequest,
+    CalculateScoreResponse,
     LatestScoresResponse,
     RiskScoreBreakdown,
     RiskScoreResponse,
     TrendPointResponse,
     TrendResponse,
 )
+from ingestion.wazuh_client import WazuhClient
 
 logger = logging.getLogger(__name__)
 
@@ -290,3 +294,203 @@ async def get_asset_trend(
         total_points=len(trend_data),
         trend_data=trend_data,
     )
+
+
+# ============================================================================
+# Calculate Risk Score
+# ============================================================================
+
+def calculate_impact(questionnaire_answers: list[int]) -> float:
+    """Calculate Impact score from questionnaire answers."""
+    if len(questionnaire_answers) != 8:
+        raise ValueError("Must provide exactly 8 questionnaire answers")
+    if not all(1 <= ans <= 5 for ans in questionnaire_answers):
+        raise ValueError("All answers must be between 1 and 5")
+    avg_likert = sum(questionnaire_answers) / len(questionnaire_answers)
+    return avg_likert / 5.0
+
+
+def calculate_vulnerability(sca_pass_percentage: float) -> float:
+    """Calculate Vulnerability score from SCA pass percentage."""
+    if not (0.0 <= sca_pass_percentage <= 100.0):
+        raise ValueError("SCA pass percentage must be between 0 and 100")
+    return 100.0 - sca_pass_percentage
+
+
+def calculate_threat_score(alert_counts: dict, t_previous: float) -> float:
+    """Calculate Threat score with time decay."""
+    ALERT_WEIGHTS = {
+        "low": 1,
+        "medium": 5,
+        "high": 10,
+        "critical": 25,
+    }
+    DECAY_FACTOR = 0.5
+
+    t_new = sum(
+        alert_counts.get(level, 0) * weight
+        for level, weight in ALERT_WEIGHTS.items()
+    )
+    t_now = t_new + (t_previous * DECAY_FACTOR)
+    return min(t_now, 100.0)
+
+
+def calculate_risk_score(I: float, V: float, T: float, w1: float = 0.3, w2: float = 0.7) -> float:
+    """Calculate final risk score."""
+    R = I * (w1 * V + w2 * T)
+    return round(min(max(R, 0), 100), 2)
+
+
+def get_severity(risk_score: float) -> str:
+    """Get severity level based on risk score."""
+    if risk_score < 40:
+        return "Low"
+    elif risk_score < 70:
+        return "Medium"
+    elif risk_score < 90:
+        return "High"
+    else:
+        return "Critical"
+
+
+@router.post(
+    "/scores/calculate",
+    response_model=CalculateScoreResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Calculate risk score",
+    description="Calculate risk score based on Wazuh data and questionnaire answers.",
+)
+async def calculate_score(request: CalculateScoreRequest) -> CalculateScoreResponse:
+    """
+    Calculate risk score for an asset based on provided Wazuh data.
+
+    Args:
+        request: Calculation parameters
+
+    Returns:
+        CalculateScoreResponse with calculated scores
+
+    Raises:
+        HTTPException 400: If input validation fails
+    """
+    try:
+        # Calculate components
+        impact = calculate_impact(request.questionnaire_answers)
+        vulnerability = calculate_vulnerability(request.sca_pass_percentage)
+        threat = calculate_threat_score(request.alert_counts, request.t_previous)
+        risk_score = calculate_risk_score(impact, vulnerability, threat, request.w1, request.w2)
+        severity = get_severity(risk_score)
+
+        # Create formula string
+        formula = f"R = {impact:.2f} × ({request.w1}×{vulnerability:.2f} + {request.w2}×{threat:.2f}) = {risk_score:.2f}"
+
+        logger.info(
+            "Risk score calculated | asset_id=%s | I=%.2f | V=%.2f | T=%.2f | R=%.2f | severity=%s",
+            request.asset_id, impact, vulnerability, threat, risk_score, severity
+        )
+
+        return CalculateScoreResponse(
+            asset_id=request.asset_id,
+            timestamp=datetime.now(timezone.utc),
+            impact=round(impact, 2),
+            vulnerability=round(vulnerability, 2),
+            threat=round(threat, 2),
+            risk_score=risk_score,
+            severity=severity,
+            formula=formula,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.post(
+    "/scores/auto-calculate",
+    response_model=CalculateScoreResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Auto-calculate risk score from live Wazuh data",
+    description="Automatically fetch SCA and alert data from Wazuh and calculate risk score.",
+)
+async def auto_calculate_score(request: AutoCalculateScoreRequest) -> CalculateScoreResponse:
+    """
+    Calculate risk score automatically from live Wazuh data.
+
+    This endpoint:
+    1. Fetches SCA pass percentage from Wazuh API
+    2. Counts alerts by level from Wazuh Indexer
+    3. Uses T_previous = 0 (can be enhanced to fetch from database)
+    4. Calculates final risk score
+
+    Args:
+        request: Auto-calculation parameters
+
+    Returns:
+        CalculateScoreResponse with calculated scores
+
+    Raises:
+        HTTPException 400: If Wazuh data fetch fails
+        HTTPException 503: If Wazuh service unavailable
+    """
+    try:
+        # Calculate Impact from questionnaire
+        impact = calculate_impact(request.questionnaire_answers)
+
+        # Fetch live data from Wazuh
+        with WazuhClient.from_settings() as client:
+            # Get SCA data
+            sca_summaries = client.get_sca_summary(request.wazuh_agent_id)
+            if not sca_summaries:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No SCA data found for agent {request.wazuh_agent_id}"
+                )
+
+            # Calculate SCA pass percentage (average across all policies)
+            total_checks = sum(s.pass_count + s.fail_count + s.not_applicable for s in sca_summaries)
+            total_pass = sum(s.pass_count for s in sca_summaries)
+            sca_pass_percentage = (total_pass / total_checks * 100) if total_checks > 0 else 0.0
+
+            # Get alert counts for the lookback period
+            to_dt = datetime.now(timezone.utc)
+            from_dt = to_dt - timedelta(hours=request.lookback_hours)
+            alert_counts = client.count_alerts_by_level(request.wazuh_agent_id, from_dt, to_dt)
+
+        # Calculate Vulnerability and Threat
+        vulnerability = calculate_vulnerability(sca_pass_percentage)
+        threat = calculate_threat_score(alert_counts, 0.0)  # T_previous = 0 for now
+
+        # Calculate final risk score
+        risk_score = calculate_risk_score(impact, vulnerability, threat, request.w1, request.w2)
+        severity = get_severity(risk_score)
+
+        # Create formula string
+        formula = f"R = {impact:.2f} × ({request.w1}×{vulnerability:.2f} + {request.w2}×{threat:.2f}) = {risk_score:.2f}"
+
+        logger.info(
+            "Auto-calculated risk score | asset_id=%s agent_id=%s | I=%.2f | V=%.2f (SCA=%.1f%%) | T=%.2f | R=%.2f | severity=%s",
+            request.asset_id, request.wazuh_agent_id, impact, vulnerability, sca_pass_percentage, threat, risk_score, severity
+        )
+
+        return CalculateScoreResponse(
+            asset_id=request.asset_id,
+            timestamp=datetime.now(timezone.utc),
+            impact=round(impact, 2),
+            vulnerability=round(vulnerability, 2),
+            threat=round(threat, 2),
+            risk_score=risk_score,
+            severity=severity,
+            formula=formula,
+            data_source="wazuh_live",
+        )
+
+    except Exception as e:
+        logger.error("Failed to auto-calculate score for asset %s: %s", request.asset_id, str(e))
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to fetch data from Wazuh: {str(e)}"
+        )

@@ -1,0 +1,17 @@
+{
+  "asset_id": "asset-001",
+  "wazuh_agent_id": "001",
+  "questionnaire_answers": [
+    5,
+    4,
+    5,
+    4,
+    5,
+    4,
+    5,
+    4
+  ],
+  "lookback_hours": 1,
+  "w1": 0.3,
+  "w2": 0.7
+}

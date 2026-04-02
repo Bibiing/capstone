@@ -459,6 +459,142 @@ class TrendResponse(BaseModel):
 
 
 # =============================================================================
+# Calculate Score Schemas
+# =============================================================================
+class CalculateScoreRequest(BaseModel):
+    """Request to calculate risk score based on Wazuh data."""
+
+    asset_id: str = Field(..., description="Asset ID to calculate score for")
+    questionnaire_answers: list[int] = Field(
+        ...,
+        min_length=8,
+        max_length=8,
+        description="8 Likert scores (1-5) from questionnaire",
+        example=[5, 4, 5, 4, 5, 4, 5, 4]
+    )
+    sca_pass_percentage: float = Field(
+        ...,
+        ge=0.0,
+        le=100.0,
+        description="SCA pass percentage from Wazuh (0-100)",
+        example=39.16
+    )
+    alert_counts: dict = Field(
+        ...,
+        description="Alert counts by level: low, medium, high, critical",
+        example={"low": 10, "medium": 5, "high": 2, "critical": 0}
+    )
+    t_previous: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=100.0,
+        description="Previous threat score (0-100)",
+        example=50.0
+    )
+    w1: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Vulnerability weight"
+    )
+    w2: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Threat weight"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "asset_id": "asset-001",
+                "questionnaire_answers": [5, 4, 5, 4, 5, 4, 5, 4],
+                "sca_pass_percentage": 39.16,
+                "alert_counts": {"low": 10, "medium": 5, "high": 2, "critical": 0},
+                "t_previous": 50.0,
+                "w1": 0.3,
+                "w2": 0.7
+            }
+        }
+
+
+class CalculateScoreResponse(BaseModel):
+    """Response containing calculated risk score."""
+
+    asset_id: str
+    timestamp: datetime
+    impact: float = Field(..., description="Impact score (0.2-1.0)")
+    vulnerability: float = Field(..., description="Vulnerability score (0-100)")
+    threat: float = Field(..., description="Threat score (0-100)")
+    risk_score: float = Field(..., ge=0.0, le=100.0)
+    severity: str = Field(
+        ...,
+        description="Severity level: Low (<40) | Medium (<70) | High (<90) | Critical (>=90)",
+    )
+    formula: str = Field(..., description="Calculation formula")
+    data_source: str = Field(..., description="Data source: manual or wazuh_live")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "asset_id": "asset-001",
+                "timestamp": "2026-04-03T10:00:00Z",
+                "impact": 0.88,
+                "vulnerability": 60.84,
+                "threat": 75.0,
+                "risk_score": 72.9,
+                "severity": "High",
+                "formula": "R = 0.88 × (0.3×60.84 + 0.7×75.0) = 72.9",
+                "data_source": "wazuh_live"
+            }
+        }
+
+
+class AutoCalculateScoreRequest(BaseModel):
+    """Request to auto-calculate risk score from live Wazuh data."""
+
+    asset_id: str = Field(..., description="Asset ID to calculate score for")
+    wazuh_agent_id: str = Field(..., description="Wazuh agent ID (e.g., '001')")
+    questionnaire_answers: list[int] = Field(
+        ...,
+        min_length=8,
+        max_length=8,
+        description="8 Likert scores (1-5) from questionnaire",
+        example=[5, 4, 5, 4, 5, 4, 5, 4]
+    )
+    lookback_hours: int = Field(
+        default=1,
+        ge=1,
+        le=24,
+        description="Hours to look back for alerts (1-24)"
+    )
+    w1: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Vulnerability weight"
+    )
+    w2: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Threat weight"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "asset_id": "asset-001",
+                "wazuh_agent_id": "001",
+                "questionnaire_answers": [5, 4, 5, 4, 5, 4, 5, 4],
+                "lookback_hours": 1,
+                "w1": 0.3,
+                "w2": 0.7
+            }
+        }
+
+
+# =============================================================================
 # Simulation Schemas
 # =============================================================================
 class SimulateSpikeRequest(BaseModel):

@@ -1,0 +1,23 @@
+{
+  "asset_id": "asset-001",
+  "questionnaire_answers": [
+    5,
+    4,
+    5,
+    4,
+    5,
+    4,
+    5,
+    4
+  ],
+  "sca_pass_percentage": 39.16,
+  "alert_counts": {
+    "low": 10,
+    "medium": 5,
+    "high": 2,
+    "critical": 0
+  },
+  "t_previous": 50.0,
+  "w1": 0.3,
+  "w2": 0.7
+}

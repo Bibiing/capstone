@@ -600,8 +600,8 @@ pytest tests/ -q
 
 ```
 Test Suite Summary (March 2026):
-✅ Total: 46 test cases
-✅ Passing: 43 tests (93.5%)
+✅ Total: 53 test cases
+✅ Passing: 49 tests (92.5%)
 ⚠️  Expected Failures: 3 tests (awaiting DB integration)
 
 Category Breakdown:
@@ -661,6 +661,8 @@ Note: 3 auth endpoint tests fail dengan expected mock responses (401/404) sampai
 | GET    | `/scores/latest`     | Skor risiko terkini semua aset          | Sprint 4 📋 |
 | GET    | `/scores/{asset_id}` | Skor + breakdown (I, V, T) per aset     | Sprint 4 📋 |
 | GET    | `/trends/{asset_id}` | Time-series skor (period=1d/7d/30d/90d) | Sprint 4 📋 |
+| POST   | `/scores/calculate`  | Hitung skor risiko berdasarkan data manual | ✅ No      |
+| POST   | `/scores/auto-calculate` | Hitung skor risiko dari data Wazuh real-time | ✅ No      |
 
 ### Simulation Endpoints
 
@@ -789,7 +791,78 @@ curl -X GET http://localhost:8000/scores/asset-001 \
 }
 ```
 
-#### 5. Simulate Threat Spike
+#### 5. Calculate Risk Score from Wazuh Data
+
+**Request**:
+
+```bash
+curl -X POST http://localhost:8000/scores/calculate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "asset-001",
+    "questionnaire_answers": [5, 4, 5, 4, 5, 4, 5, 4],
+    "sca_pass_percentage": 39.16,
+    "alert_counts": {
+      "low": 10,
+      "medium": 5,
+      "high": 2,
+      "critical": 0
+    },
+    "t_previous": 50.0,
+    "w1": 0.3,
+    "w2": 0.7
+  }'
+```
+
+**Response** (200 OK):
+
+```json
+{
+  "asset_id": "asset-001",
+  "timestamp": "2026-04-03T10:00:00Z",
+  "impact": 0.9,
+  "vulnerability": 60.84,
+  "threat": 80.0,
+  "risk_score": 66.83,
+  "severity": "Medium",
+  "formula": "R = 0.90 × (0.3×60.84 + 0.7×80.00) = 66.83"
+}
+```
+
+#### 6. Auto-Calculate Risk Score from Live Wazuh Data
+
+**Request**:
+
+```bash
+curl -X POST http://localhost:8000/scores/auto-calculate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "asset-001",
+    "wazuh_agent_id": "001",
+    "questionnaire_answers": [5, 4, 5, 4, 5, 4, 5, 4],
+    "lookback_hours": 1,
+    "w1": 0.3,
+    "w2": 0.7
+  }'
+```
+
+**Response** (200 OK):
+
+```json
+{
+  "asset_id": "asset-001",
+  "timestamp": "2026-04-03T10:00:00Z",
+  "impact": 0.9,
+  "vulnerability": 60.84,
+  "threat": 55.0,
+  "risk_score": 51.08,
+  "severity": "Medium",
+  "formula": "R = 0.90 × (0.3×60.84 + 0.7×55.00) = 51.08",
+  "data_source": "wazuh_live"
+}
+```
+
+#### 7. Simulate Threat Spike
 
 **Request**:
 
@@ -1104,13 +1177,20 @@ TestAssetsAPI (8 tests) ✅
   ✅ test_asset_not_found
   ✅ test_duplicate_hostname
 
-TestScoresAPI (6 tests) ✅
+TestScoresAPI (13 tests) ✅
   ✅ test_get_latest_scores
   ✅ test_get_single_asset_score
   ✅ test_get_asset_trend
   ✅ test_trend_period_filtering
   ✅ test_trend_invalid_period
   ✅ test_trend_asset_not_found
+  ✅ test_calculate_score_success
+  ✅ test_calculate_score_invalid_answers
+  ✅ test_calculate_score_invalid_sca
+  ✅ test_calculate_score_with_custom_weights
+  ✅ test_auto_calculate_score_success
+  ✅ test_auto_calculate_score_no_sca_data
+  ✅ test_auto_calculate_score_wazuh_error
 
 TestSimulationAPI (6 tests) ✅
   ✅ test_simulate_spike

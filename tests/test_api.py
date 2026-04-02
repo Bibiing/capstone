@@ -12,6 +12,7 @@ Test modules:
 import pytest
 from fastapi.testclient import TestClient
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 from api.main import app
 from api.security import (
@@ -494,6 +495,167 @@ class TestScoresAPI:
         response = client.get("/trends/asset-nonexistent?period=7d")
 
         assert response.status_code == 404
+
+    def test_calculate_score_success(self):
+        """Test calculating risk score successfully."""
+        payload = {
+            "asset_id": "asset-001",
+            "questionnaire_answers": [5, 4, 5, 4, 5, 4, 5, 4],  # avg 4.5, I=0.9
+            "sca_pass_percentage": 39.16,  # V=60.84
+            "alert_counts": {"low": 10, "medium": 5, "high": 2, "critical": 0},  # T_new=10*1 + 5*5 + 2*10 + 0*25=55
+            "t_previous": 50.0,  # T_now=55 + 50*0.5=80
+            "w1": 0.3,
+            "w2": 0.7
+        }
+        # R = 0.9 * (0.3*60.84 + 0.7*80) = 0.9 * (18.252 + 56) = 0.9 * 74.252 = 66.8268 ≈ 66.83
+
+        response = client.post("/scores/calculate", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["asset_id"] == "asset-001"
+        assert "impact" in data
+        assert "vulnerability" in data
+        assert "threat" in data
+        assert "risk_score" in data
+        assert "severity" in data
+        assert "formula" in data
+        assert data["impact"] == 0.9
+        assert data["vulnerability"] == 60.84
+        assert data["threat"] == 80.0
+        assert data["risk_score"] == 66.83
+        assert data["severity"] == "Medium"
+
+    def test_calculate_score_invalid_answers(self):
+        """Test calculating score with invalid questionnaire answers."""
+        payload = {
+            "asset_id": "asset-001",
+            "questionnaire_answers": [1, 2, 3, 4, 5],  # wrong length
+            "sca_pass_percentage": 50.0,
+            "alert_counts": {"low": 0, "medium": 0, "high": 0, "critical": 0},
+            "t_previous": 0.0
+        }
+
+        response = client.post("/scores/calculate", json=payload)
+
+        assert response.status_code == 422
+
+    def test_calculate_score_invalid_sca(self):
+        """Test calculating score with invalid SCA percentage."""
+        payload = {
+            "asset_id": "asset-001",
+            "questionnaire_answers": [1, 2, 3, 4, 5, 1, 2, 3],
+            "sca_pass_percentage": 150.0,  # invalid
+            "alert_counts": {"low": 0, "medium": 0, "high": 0, "critical": 0},
+            "t_previous": 0.0
+        }
+
+        response = client.post("/scores/calculate", json=payload)
+
+        assert response.status_code == 422
+
+
+    def test_calculate_score_with_custom_weights(self):
+        """Test calculating score with custom weights."""
+        payload = {
+            "asset_id": "asset-001",
+            "questionnaire_answers": [5, 5, 5, 5, 5, 5, 5, 5],  # avg 5.0, I=1.0
+            "sca_pass_percentage": 50.0,  # V=50.0
+            "alert_counts": {"low": 0, "medium": 0, "high": 0, "critical": 0},  # T_new=0
+            "t_previous": 0.0,  # T_now=0
+            "w1": 0.5,  # Custom weights
+            "w2": 0.5
+        }
+        # R = 1.0 * (0.5*50.0 + 0.5*0) = 25.0
+
+        response = client.post("/scores/calculate", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["impact"] == 1.0
+        assert data["vulnerability"] == 50.0
+        assert data["threat"] == 0.0
+        assert data["risk_score"] == 25.0
+        assert data["severity"] == "Low"
+
+
+    @patch('api.routes.scores.WazuhClient')
+    def test_auto_calculate_score_success(self, mock_wazuh_client):
+        """Test auto-calculating risk score from live Wazuh data."""
+        # Mock Wazuh client
+        mock_client = MagicMock()
+        mock_wazuh_client.from_settings.return_value.__enter__.return_value = mock_client
+        
+        # Mock SCA data (39.16% pass rate like the example)
+        mock_sca_summary = MagicMock()
+        mock_sca_summary.pass_count = 56
+        mock_sca_summary.fail_count = 87
+        mock_sca_summary.not_applicable = 0
+        mock_client.get_sca_summary.return_value = [mock_sca_summary]
+        
+        # Mock alert counts (10 low, 5 medium, 2 high, 0 critical)
+        mock_client.count_alerts_by_level.return_value = {
+            "low": 10, "medium": 5, "high": 2, "critical": 0
+        }
+
+        payload = {
+            "asset_id": "asset-001",
+            "wazuh_agent_id": "001",
+            "questionnaire_answers": [5, 4, 5, 4, 5, 4, 5, 4],  # avg 4.5, I=0.9
+            "lookback_hours": 1,
+            "w1": 0.3,
+            "w2": 0.7
+        }
+        # Expected: SCA=39.16%, V=60.84, T=55, R=0.9*(0.3*60.84 + 0.7*55)=0.9*(18.252 + 38.5)=0.9*56.752=51.0768
+
+        response = client.post("/scores/auto-calculate", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["asset_id"] == "asset-001"
+        assert data["impact"] == 0.9
+        assert data["vulnerability"] == 60.84
+        assert data["threat"] == 55.0
+        assert data["risk_score"] == 51.08
+        assert data["severity"] == "Medium"
+        assert data["data_source"] == "wazuh_live"
+        assert "formula" in data
+
+    @patch('api.routes.scores.WazuhClient')
+    def test_auto_calculate_score_no_sca_data(self, mock_wazuh_client):
+        """Test auto-calculate when no SCA data available."""
+        mock_client = MagicMock()
+        mock_wazuh_client.from_settings.return_value.__enter__.return_value = mock_client
+        mock_client.get_sca_summary.return_value = []  # No SCA data
+
+        payload = {
+            "asset_id": "asset-001",
+            "wazuh_agent_id": "001",
+            "questionnaire_answers": [5, 5, 5, 5, 5, 5, 5, 5],
+            "lookback_hours": 1
+        }
+
+        response = client.post("/scores/auto-calculate", json=payload)
+
+        assert response.status_code == 400
+        assert "No SCA data found" in response.json()["detail"]
+
+    @patch('api.routes.scores.WazuhClient')
+    def test_auto_calculate_score_wazuh_error(self, mock_wazuh_client):
+        """Test auto-calculate when Wazuh service is unavailable."""
+        mock_wazuh_client.from_settings.side_effect = Exception("Connection failed")
+
+        payload = {
+            "asset_id": "asset-001",
+            "wazuh_agent_id": "001",
+            "questionnaire_answers": [5, 5, 5, 5, 5, 5, 5, 5],
+            "lookback_hours": 1
+        }
+
+        response = client.post("/scores/auto-calculate", json=payload)
+
+        assert response.status_code == 503
+        assert "Failed to fetch data from Wazuh" in response.json()["detail"]
 
 
 # ============================================================================
