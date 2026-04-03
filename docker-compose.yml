@@ -1,46 +1,46 @@
 services:
   # ── PostgreSQL ───────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: risk_scoring_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-capstone}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-capstone_dev}
-      POSTGRES_DB: ${POSTGRES_DB:-risk_scoring}
-    ports:
-      - '5432:5432'
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test:
-        [
-          'CMD-SHELL',
-          'pg_isready -U ${POSTGRES_USER:-capstone} -d ${POSTGRES_DB:-risk_scoring}',
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: risk_scoring_db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #   ports:
+  #     - '5432:5432'
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test:
+  #       [
+  #         'CMD-SHELL',
+  #         'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}',
+  #       ]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 10s
 
   # ── pgAdmin (Development only — start with: docker compose --profile dev up) ─
-  pgadmin:
-    image: dpage/pgadmin4:8
-    container_name: risk_scoring_pgadmin
-    profiles: ['dev']
-    restart: unless-stopped
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@localhost.dev}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin_dev}
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
-    ports:
-      - '5050:80'
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
+  # pgadmin:
+  #   image: dpage/pgadmin4:8
+  #   container_name: risk_scoring_pgadmin
+  #   profiles: ['dev']
+  #   restart: unless-stopped
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+  #     PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+  #     PGADMIN_CONFIG_SERVER_MODE: 'False'
+  #     PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+  #   ports:
+  #     - '5050:80'
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   volumes:
+  #     - pgadmin_data:/var/lib/pgadmin
 
   # ── FastAPI Backend ──────────────────────────────────────────────────────────
   api:
@@ -51,8 +51,6 @@ services:
     ports:
       - '8000:8000'
     env_file: .env
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-capstone}:${POSTGRES_PASSWORD:-capstone_dev}@postgres:5432/${POSTGRES_DB:-risk_scoring}
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,7 +70,7 @@ services:
   #   command: python -m engine.scheduler
   #   env_file: .env
   #   environment:
-  #     - DATABASE_URL=postgresql://capstone:capstone_dev@postgres:5432/risk_scoring
+  #     - DATABASE_URL=${DATABASE_URL}
   #   depends_on:
   #     postgres:
   #       condition: service_healthy
@@ -89,7 +87,7 @@ services:
   #     - "8000:8000"
   #   env_file: .env
   #   environment:
-  #     - DATABASE_URL=postgresql://capstone:capstone_dev@postgres:5432/risk_scoring
+  #     - DATABASE_URL=${DATABASE_URL}
   #   depends_on:
   #     postgres:
   #       condition: service_healthy
