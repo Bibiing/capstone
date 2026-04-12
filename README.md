@@ -52,7 +52,7 @@ Semua endpoint bisnis dilindungi auth. Tanpa login, request akan ditolak (401/40
 Pengecualian endpoint publik:
 
 - GET /health
-- Endpoint auth Firebase di bawah /auth/firebase/*
+- Endpoint auth Firebase di bawah /auth/firebase/\*
 - /docs dan /openapi.json (default FastAPI, sebaiknya dibatasi di production lewat gateway)
 
 ### 2.3 Role onboarding pasca sign-in
