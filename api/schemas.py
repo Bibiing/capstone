@@ -2,7 +2,7 @@
 Pydantic schemas for request/response validation and documentation.
 
 Organized by feature:
-    - Auth schemas: Register, Login, Verify OTP
+    - Auth schemas: Firebase sign-in, complete-profile, and backend session
     - Asset schemas: Asset CRUD
     - Score schemas: Risk score queries and responses
     - Error schemas: Standard error response format
@@ -46,86 +46,6 @@ class ErrorResponse(BaseModel):
         }
 
 
-# =============================================================================
-# Authentication Schemas
-# =============================================================================
-class RegisterRequest(BaseModel):
-    """User registration request."""
-
-    username: str = Field(
-        ...,
-        min_length=3,
-        max_length=50,
-        description="Unique username (alphanumeric, 3-50 chars)",
-        example="john_doe",
-    )
-    email: EmailStr = Field(
-        ...,
-        description="Email address (must be unique and valid)",
-        example="john@example.com",
-    )
-    password: str = Field(
-        ...,
-        min_length=8,
-        max_length=100,
-        description="Password (min 8 chars; must include uppercase, lowercase, digit, special char)",
-        example="SecurePass123!",
-    )
-    role: AuthRole = Field(
-        ...,
-        description="User role. Allowed values: CISO, Manajemen",
-        example="Manajemen",
-    )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "username": "jane_manager",
-                "email": "jane.doe@bank.com",
-                "password": "MySecurePassword123!",
-                "role": "Manajemen",
-            }
-        }
-
-
-class RegisterResponse(BaseModel):
-    """Response after successful registration."""
-
-    user_id: int = Field(..., description="Newly created user ID")
-    username: str
-    email: str
-    role: AuthRole
-    message: str = Field(default="Registration successful. Please verify your email using the OTP sent.")
-    verification_required: bool = Field(default=True)
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "user_id": 1,
-                "username": "jane_manager",
-                "email": "jane.doe@bank.com",
-                "role": "Manajemen",
-                "message": "Registration successful. Please verify your email using the OTP sent.",
-                "verification_required": True,
-            }
-        }
-
-
-class LoginRequest(BaseModel):
-    """User login request."""
-
-    email: EmailStr = Field(..., description="Email or username", example="john@example.com")
-    password: str = Field(..., description="Account password")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "john@example.com",
-                "password": "SecurePass123!",
-            }
-        }
-
-
 class LoginResponse(BaseModel):
     """Response after successful login."""
 
@@ -151,62 +71,65 @@ class LoginResponse(BaseModel):
         }
 
 
-class VerifyOTPRequest(BaseModel):
-    """Request to verify OTP code."""
 
-    email: EmailStr = Field(..., description="User email address")
-    otp_code: str = Field(
+class FirebaseSignInRequest(BaseModel):
+    """Request carrying Firebase ID token from client SDK."""
+
+    id_token: str = Field(
         ...,
-        min_length=6,
-        max_length=10,
-        description="OTP code received via email",
-        example="123456",
+        min_length=20,
+        description="Firebase ID token obtained from client SDK after sign-in.",
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "jane.doe@bank.com",
-                "otp_code": "123456",
-            }
-        }
+
+class FirebaseCompleteProfileRequest(BaseModel):
+    """Request for role onboarding after Firebase verification."""
+
+    id_token: str = Field(..., min_length=20)
+    role: AuthRole = Field(..., description="Role chosen by account creator.")
 
 
-class VerifyOTPResponse(BaseModel):
-    """Response after successful OTP verification."""
+class FirebasePasswordResetRequest(BaseModel):
+    """Request for Firebase password reset flow."""
 
-    message: str = Field(default="Email verified successfully. Account is now active.")
-    is_verified: bool = Field(default=True)
+    email: EmailStr = Field(..., description="Email for password reset delivery.")
+
+
+class FirebaseActionResponse(BaseModel):
+    """Generic response for Firebase auth side effects."""
+
+    message: str
+
+
+class FirebaseSessionResponse(BaseModel):
+    """Backend auth response derived from verified Firebase identity."""
+
     user_id: int
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "message": "Email verified successfully. Account is now active.",
-                "is_verified": True,
-                "user_id": 1,
-            }
-        }
-
-
-class ResendOTPRequest(BaseModel):
-    """Request to resend OTP code."""
-
-    email: EmailStr = Field(..., description="User email address")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "email": "jane.doe@bank.com",
-            }
-        }
+    firebase_uid: str
+    email: str
+    username: str
+    role: AuthRole
+    provider: str = Field(..., description="Firebase provider, e.g. password or google.com")
+    email_verified: bool
+    role_required: bool = Field(
+        ...,
+        description="True when user must complete role onboarding before getting full backend session.",
+    )
+    message: str
+    session: Optional[LoginResponse] = Field(
+        default=None,
+        description="App session token payload. Null if role onboarding is still required.",
+    )
 
 
-class ResendOTPResponse(BaseModel):
-    """Response after OTP resend."""
+class AuthenticatedUser(BaseModel):
+    """Identity extracted from a verified backend bearer token."""
 
-    message: str = Field(default="OTP has been resent to your email address.")
-    expires_in_minutes: int = Field(..., description="OTP expiration time in minutes")
+    user_id: int
+    username: str
+    email: str
+    role: AuthRole
+    firebase_uid: Optional[str] = None
 
     class Config:
         json_schema_extra = {

@@ -1,28 +1,33 @@
-"""Business logic for authentication and OTP workflows."""
+"""Business logic for Firebase-backed authentication workflows."""
+
+from __future__ import annotations
+
+import re
+from uuid import uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from api.email import send_otp_email, send_otp_resend_notification
-from api.schemas import AuthRole, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse
-from api.schemas import ResendOTPRequest, ResendOTPResponse, VerifyOTPRequest, VerifyOTPResponse
-from api.security import (
-    create_access_token,
-    generate_otp,
-    get_otp_expiration_time,
-    hash_password,
-    is_otp_expired,
-    verify_password,
+from api.schemas import (
+    AuthRole,
+    FirebaseActionResponse,
+    FirebaseCompleteProfileRequest,
+    FirebaseSessionResponse,
+    FirebaseSignInRequest,
+    LoginResponse,
 )
-from config.settings import Settings
-from database.models import OTPCode, User, UserRole
-from database.repositories.auth_repository import AuthRepository
+from api.security import create_access_token
+from api.services.firebase_auth_service import FirebaseAuthService
 from api.services.rate_limiter import InMemoryRateLimiter
+from config.settings import Settings
+from database.models import User, UserRole
+from database.repositories.auth_repository import AuthRepository
+
+_FIREBASE_SENTINEL_PASSWORD_HASH = "FIREBASE_MANAGED"
 
 
 class AuthService:
-    """Use-case service for user auth flows."""
+    """Use-case service for Firebase auth and profile completion."""
 
     def __init__(
         self,
@@ -33,153 +38,42 @@ class AuthService:
         self._settings = settings
         self._repo = repository
         self._rate_limiter = rate_limiter
+        self._firebase = FirebaseAuthService(settings)
 
     @staticmethod
     def _normalize_email(email: str) -> str:
         return email.lower().strip()
 
-    @staticmethod
-    def _validate_password_strength(password: str) -> None:
-        has_upper = any(c.isupper() for c in password)
-        has_lower = any(c.islower() for c in password)
-        has_digit = any(c.isdigit() for c in password)
-        has_special = any(not c.isalnum() for c in password)
-
-        if not (has_upper and has_lower and has_digit and has_special):
+    def _ensure_firebase_config(self) -> None:
+        if not self._settings.firebase_project_id:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Password must contain: uppercase, lowercase, digit, and special character. "
-                    "Example: SecurePass123!"
-                ),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="FIREBASE_PROJECT_ID is not configured.",
             )
 
-    async def register(self, db: Session, request: RegisterRequest) -> RegisterResponse:
-        self._validate_password_strength(request.password)
+    def _build_unique_username(self, db: Session, email: str, display_name: str | None) -> str:
+        base = display_name or email.split("@")[0]
+        base = re.sub(r"[^a-zA-Z0-9_]", "_", base).strip("_").lower() or "user"
+        base = base[:40]
 
-        normalized_email = self._normalize_email(request.email)
-        if not self._rate_limiter.allow(
-            key=f"auth:register:{normalized_email}",
-            limit=self._settings.auth_register_limit_per_hour,
-            window_seconds=3600,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many registration attempts. Please try again later.",
-            )
+        candidate = base
+        if not self._repo.username_exists(db, candidate):
+            return candidate
 
-        existing_user = self._repo.get_user_by_username_or_email(
-            db=db,
-            username=request.username,
-            email=normalized_email,
-        )
+        for _ in range(10):
+            candidate = f"{base}_{uuid4().hex[:6]}"
+            if not self._repo.username_exists(db, candidate):
+                return candidate
 
-        if existing_user is not None:
-            detail = (
-                "Username is already registered"
-                if existing_user.username == request.username
-                else "Email is already registered"
-            )
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+        return f"user_{uuid4().hex[:10]}"
 
-        new_user = User(
-            username=request.username,
-            email=normalized_email,
-            password_hash=hash_password(request.password),
-            role=UserRole(request.role.value),
-            is_active=False,
-            is_verified=False,
-        )
-
-        self._repo.add_user(db, new_user)
-        try:
-            db.flush()
-        except IntegrityError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username or email is already registered",
-            )
-
-        otp_code = generate_otp()
-        self._repo.add_otp(
-            db,
-            OTPCode(
-                user_id=new_user.user_id,
-                code=otp_code,
-                expires_at=get_otp_expiration_time(),
-                is_used=False,
-                attempts=0,
-            ),
-        )
-
-        email_sent = await send_otp_email(
-            to_email=request.email,
-            otp_code=otp_code,
-            settings=self._settings,
-            username=request.username,
-        )
-
-        if email_sent:
-            message = (
-                "Registration successful! "
-                "A verification code has been sent to your email. "
-                "Please check your inbox and verify within 15 minutes."
-            )
-        else:
-            message = (
-                "Registration successful, but there was an issue sending the verification email. "
-                "Please check your spam folder or request a new code."
-            )
-
-        return RegisterResponse(
-            user_id=new_user.user_id,
-            username=request.username,
-            email=normalized_email,
-            role=request.role,
-            message=message,
-            verification_required=True,
-        )
-
-    async def login(self, db: Session, request: LoginRequest) -> LoginResponse:
-        normalized_email = self._normalize_email(request.email)
-        if not self._rate_limiter.allow(
-            key=f"auth:login:{normalized_email}",
-            limit=self._settings.auth_login_limit_per_15m,
-            window_seconds=900,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many login attempts. Please try again later.",
-            )
-
-        user = self._repo.get_user_by_email(db, normalized_email)
-
-        if user is None or not verify_password(request.password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        if not user.is_verified:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Email not verified. Please verify your OTP first.",
-            )
-
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is inactive. Contact administrator.",
-            )
-
+    def _sign_app_token(self, user: User) -> LoginResponse:
         access_token, expires_in = create_access_token(
             user_id=user.user_id,
             username=user.username,
             email=user.email,
             role=user.role.value,
         )
-
         return LoginResponse(
             user_id=user.user_id,
             username=user.username,
@@ -190,130 +84,181 @@ class AuthService:
             expires_in=expires_in,
         )
 
-    async def verify_otp(self, db: Session, request: VerifyOTPRequest) -> VerifyOTPResponse:
-        normalized_email = self._normalize_email(request.email)
+    def _upsert_user_from_firebase_claims(self, db: Session, claims: dict) -> User:
+        uid = claims.get("uid")
+        email_raw = claims.get("email")
+
+        if not uid or not email_raw:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Firebase token missing required uid/email claims.",
+            )
+
+        email = self._normalize_email(email_raw)
+        firebase_meta = claims.get("firebase", {}) or {}
+        provider = firebase_meta.get("sign_in_provider", "unknown")
+        display_name = claims.get("name")
+        avatar_url = claims.get("picture")
+        email_verified = bool(claims.get("email_verified", False))
+
+        user = self._repo.get_user_by_firebase_uid(db, uid)
+
+        if user is None:
+            user = self._repo.get_user_by_email(db, email)
+            if user is not None and user.firebase_uid and user.firebase_uid != uid:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Email is already linked to another Firebase identity.",
+                )
+
+        if user is None:
+            user = User(
+                username=self._build_unique_username(db, email=email, display_name=display_name),
+                email=email,
+                password_hash=_FIREBASE_SENTINEL_PASSWORD_HASH,
+                role=UserRole.MANAJEMEN,
+                is_active=False,
+                is_verified=email_verified,
+                firebase_uid=uid,
+                auth_provider=provider,
+                display_name=display_name,
+                avatar_url=avatar_url,
+            )
+            self._repo.add_user(db, user)
+            db.flush()
+            return user
+
+        # Existing user: synchronize provider metadata but never downgrade verification status.
+        user.firebase_uid = uid
+        user.auth_provider = provider
+        user.display_name = display_name or user.display_name
+        user.avatar_url = avatar_url or user.avatar_url
+        user.is_verified = user.is_verified or email_verified
+        return user
+
+    async def firebase_sign_in(self, db: Session, request: FirebaseSignInRequest) -> FirebaseSessionResponse:
+        self._ensure_firebase_config()
+
+        token_key = request.id_token[:24]
         if not self._rate_limiter.allow(
-            key=f"auth:verify:{normalized_email}",
-            limit=self._settings.auth_verify_limit_per_15m,
+            key=f"auth:firebase:signin:{token_key}",
+            limit=self._settings.auth_login_limit_per_15m,
             window_seconds=900,
         ):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many OTP verification attempts. Please try again later.",
+                detail="Too many authentication attempts. Please try again later.",
             )
 
-        user = self._repo.get_user_by_email(db, normalized_email)
+        claims = self._firebase.verify_id_token(request.id_token)
+        email_verified = bool(claims.get("email_verified", False))
 
+        if self._settings.firebase_require_verified_email and not email_verified:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Email is not verified in Firebase. "
+                    "Please verify your email before accessing this backend."
+                ),
+            )
+
+        user = self._upsert_user_from_firebase_claims(db, claims)
+
+        role_required = not user.is_active
+        response = FirebaseSessionResponse(
+            user_id=user.user_id,
+            firebase_uid=user.firebase_uid or "",
+            email=user.email,
+            username=user.username,
+            role=AuthRole(user.role.value),
+            provider=user.auth_provider or "unknown",
+            email_verified=user.is_verified,
+            role_required=role_required,
+            message=(
+                "Role profile must be completed before full access."
+                if role_required
+                else "Authentication successful."
+            ),
+        )
+
+        if not role_required:
+            response.session = self._sign_app_token(user)
+
+        return response
+
+    async def complete_profile(
+        self,
+        db: Session,
+        request: FirebaseCompleteProfileRequest,
+    ) -> FirebaseSessionResponse:
+        self._ensure_firebase_config()
+
+        claims = self._firebase.verify_id_token(request.id_token)
+        uid = claims.get("uid")
+        if not uid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Firebase token missing uid claim.",
+            )
+
+        user = self._repo.get_user_by_firebase_uid(db, uid)
         if user is None:
+            # Ensure account exists if frontend calls complete-profile first.
+            user = self._upsert_user_from_firebase_claims(db, claims)
+
+        if self._settings.firebase_require_verified_email and not bool(claims.get("email_verified", False)):
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Email is not verified in Firebase.",
             )
 
-        if user.is_verified:
-            return VerifyOTPResponse(
-                message="Email already verified.",
-                is_verified=True,
-                user_id=user.user_id,
-            )
-
-        latest_otp = self._repo.get_latest_pending_otp(db, user.user_id)
-        if latest_otp is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No pending OTP found. Please request a new OTP.",
-            )
-
-        if is_otp_expired(latest_otp.expires_at):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="OTP has expired. Please request a new OTP.",
-            )
-
-        if latest_otp.attempts >= self._settings.otp_max_attempts:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Maximum OTP attempts exceeded. Please request a new OTP.",
-            )
-
-        if latest_otp.code != request.otp_code:
-            latest_otp.attempts += 1
-            remaining_attempts = max(self._settings.otp_max_attempts - latest_otp.attempts, 0)
-            if latest_otp.attempts >= self._settings.otp_max_attempts:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Maximum OTP attempts exceeded. Please request a new OTP.",
-                )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid OTP code. Remaining attempts: {remaining_attempts}",
-            )
-
-        latest_otp.is_used = True
+        user.role = UserRole(request.role.value)
         user.is_verified = True
         user.is_active = True
 
-        return VerifyOTPResponse(
-            message="Email verified successfully. Account is now active.",
-            is_verified=True,
+        response = FirebaseSessionResponse(
             user_id=user.user_id,
+            firebase_uid=user.firebase_uid or "",
+            email=user.email,
+            username=user.username,
+            role=AuthRole(user.role.value),
+            provider=user.auth_provider or "unknown",
+            email_verified=True,
+            role_required=False,
+            message="Profile completed successfully.",
+            session=self._sign_app_token(user),
         )
+        return response
 
-    async def resend_otp(self, db: Session, request: ResendOTPRequest) -> ResendOTPResponse:
-        normalized_email = self._normalize_email(request.email)
+    async def send_email_verification(self, request: FirebaseSignInRequest) -> FirebaseActionResponse:
+        self._ensure_firebase_config()
+        await self._firebase.send_email_verification(request.id_token)
+        return FirebaseActionResponse(message="Verification email request accepted.")
+
+    async def send_password_reset(self, email: str) -> FirebaseActionResponse:
+        self._ensure_firebase_config()
+
+        normalized_email = self._normalize_email(email)
         if not self._rate_limiter.allow(
-            key=f"auth:resend:{normalized_email}",
-            limit=self._settings.auth_resend_limit_per_hour,
+            key=f"auth:firebase:reset:{normalized_email}",
+            limit=self._settings.auth_password_reset_limit_per_hour,
             window_seconds=3600,
         ):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many OTP resend attempts. Please try again later.",
+                detail="Too many password reset requests. Please try again later.",
             )
 
-        user = self._repo.get_user_by_email(db, normalized_email)
+        # Do not reveal if email exists; return generic success for anti-enumeration.
+        try:
+            await self._firebase.send_password_reset_email(normalized_email)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_400_BAD_REQUEST:
+                return FirebaseActionResponse(
+                    message="If the account exists, a password reset email will be sent shortly.",
+                )
+            raise
 
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found",
-            )
-
-        if user.is_verified:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="User is already verified",
-            )
-
-        for otp in self._repo.get_pending_otps(db, user.user_id):
-            otp.is_used = True
-
-        new_otp = generate_otp()
-        self._repo.add_otp(
-            db,
-            OTPCode(
-                user_id=user.user_id,
-                code=new_otp,
-                expires_at=get_otp_expiration_time(),
-                is_used=False,
-                attempts=0,
-            ),
-        )
-
-        email_sent = await send_otp_resend_notification(
-            to_email=request.email,
-            otp_code=new_otp,
-            settings=self._settings,
-            attempt_number=1,
-        )
-
-        if not email_sent:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to send verification email. Please try again later.",
-            )
-
-        return ResendOTPResponse(
-            message=f"A new verification code has been sent to {request.email}",
-            expires_in_minutes=self._settings.otp_expiration_minutes,
+        return FirebaseActionResponse(
+            message="If the account exists, a password reset email will be sent shortly.",
         )

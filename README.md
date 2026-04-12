@@ -1,12 +1,12 @@
 # Dynamic Cyber Risk Scoring Engine
 
-Backend platform untuk mengubah telemetri Wazuh menjadi skor risiko siber yang terukur, dapat dijelaskan, dan dapat ditracking secara time-series.
+Backend platform untuk mengubah telemetri Wazuh menjadi skor risiko siber yang terukur, explainable, dan dapat ditrack secara time-series.
 
-Dokumen ini ditulis untuk kebutuhan tim engineering, DevOps, dan frontend agar onboarding, operasi, serta integrasi API berjalan konsisten di skala industri.
+Dokumen ini ditujukan untuk engineering, DevOps, QA, dan frontend agar onboarding, operasi, dan integrasi API berjalan konsisten dengan arsitektur terbaru.
 
 ---
 
-## 1. Ringkasan Eksekutif
+## 1. Ringkasan
 
 Sistem menghitung skor risiko per aset dengan formula:
 
@@ -26,44 +26,109 @@ Default bobot:
 
 Tujuan:
 
-- SOC dapat prioritas mitigasi berbasis risiko nyata.
+- SOC dapat menentukan prioritas mitigasi berbasis risiko nyata.
 - CISO/Manajemen mendapat ringkasan eksekutif yang explainable.
 - Tim dapat melakukan analisis tren dan audit trail berbasis data historis.
 
 ---
 
-## 2. Prinsip Arsitektur
+## 2. Perubahan Arsitektur Terbaru
 
-- Tidak menggunakan seed/mock untuk asset-agent.
-- Asset-agent hanya berasal dari sinkronisasi Wazuh.
-- Sumber integrasi Wazuh terpusat di service khusus.
-- Snapshot skor disimpan sebagai time-series.
-- API dipisah dari storage (PostgreSQL) dan orkestrasi job periodik.
+### 2.1 Auth sekarang Firebase-first
+
+Sebelumnya sistem menggunakan auth lokal + OTP email. Sekarang identitas pengguna dikelola oleh Firebase Authentication.
+
+Provider yang didukung:
+
+- Email/password
+- Google Sign-In
+
+Backend tetap menerbitkan JWT aplikasi sendiri setelah Firebase token tervalidasi, untuk otorisasi endpoint internal dan role-based access.
+
+### 2.2 Mandatory login untuk endpoint backend
+
+Semua endpoint bisnis dilindungi auth. Tanpa login, request akan ditolak (401/403).
+
+Pengecualian endpoint publik:
+
+- GET /health
+- Endpoint auth Firebase di bawah /auth/firebase/*
+- /docs dan /openapi.json (default FastAPI, sebaiknya dibatasi di production lewat gateway)
+
+### 2.3 Role onboarding pasca sign-in
+
+Setelah sign-in Firebase pertama kali, user belum langsung mendapat full akses. User harus menyelesaikan role onboarding:
+
+- POST /auth/firebase/complete-profile
+
+Role yang didukung:
+
+- CISO
+- Manajemen
+
+### 2.4 Legacy flow dihapus
+
+Flow legacy berikut tidak dipakai lagi:
+
+- register/login lokal
+- verify-otp/resend-otp
+- integrasi email OTP (Resend)
 
 ---
 
-## 3. Arsitektur Sistem
+## 3. Prinsip Arsitektur
+
+- Tidak menggunakan seed/mock asset-agent.
+- Asset-agent hanya berasal dari sinkronisasi Wazuh.
+- Integrasi Wazuh terpusat di service khusus.
+- Snapshot skor disimpan sebagai time-series.
+- API terpisah dari storage (PostgreSQL) dan orkestrasi job periodik.
+- Identity provider externalized ke Firebase, authorization tetap dikontrol backend.
+
+---
+
+## 4. Arsitektur Sistem
 
 ```text
-Wazuh Manager API (55000) -----> wazuh_service.py -----> sinkronisasi agents + SCA
-Wazuh Indexer API (9200)  -----> wazuh_service.py -----> query alert telemetry
-                                                 |
-                                                 v
-                                       scoring_engine.py
-                                                 |
-                                                 v
-                                         scheduler.py
-                                                 |
-                                                 v
-                            PostgreSQL (assets, risk_scores, alert_snapshots)
-                                                 |
-                                                 v
-                              FastAPI routes (auth, assets, scores, simulate)
+Firebase Auth (email/password, Google)
+          |
+          v
+Frontend obtains Firebase ID Token
+          |
+          v
+/auth/firebase/sign-in (FastAPI)
+  - verify Firebase token
+  - sync local user
+  - enforce email verification
+  - enforce role onboarding
+          |
+          v
+Backend JWT (Bearer)
+          |
+          +------------------------------+
+          |                              |
+          v                              v
+Wazuh Manager API (55000)         Wazuh Indexer API (9200)
+          \                              /
+           \                            /
+            -------> wazuh_service.py <-
+                         |
+                         v
+                   scoring_engine.py
+                         |
+                         v
+                     scheduler.py
+                         |
+                         v
+PostgreSQL (users, assets, risk_scores, alert_snapshots)
+                         |
+                         v
+FastAPI routes (auth, assets, scores, simulate)
 ```
 
 ---
 
-## 4. Struktur Repository
+## 5. Struktur Repository
 
 ```text
 Capstone/
@@ -71,7 +136,6 @@ Capstone/
 │   ├── main.py
 │   ├── schemas.py
 │   ├── security.py
-│   ├── email.py
 │   ├── dependencies/
 │   ├── routes/
 │   └── services/
@@ -93,9 +157,26 @@ Capstone/
 
 ---
 
-## 5. Data Model Inti
+## 6. Model Data Inti
 
-### assets
+### 6.1 users
+
+Tabel user lokal untuk authorization dan profil aplikasi.
+
+Field penting:
+
+- user_id
+- username
+- email
+- role
+- is_active
+- is_verified
+- firebase_uid
+- auth_provider
+- display_name
+- avatar_url
+
+### 6.2 assets
 
 Inventaris aset hasil sinkronisasi Wazuh.
 
@@ -104,7 +185,7 @@ Inventaris aset hasil sinkronisasi Wazuh.
 - name, ip_address, os_type, status
 - impact_score (0.0 - 1.0)
 
-### risk_scores
+### 6.3 risk_scores
 
 Snapshot skor risiko per aset per periode.
 
@@ -112,7 +193,7 @@ Snapshot skor risiko per aset per periode.
 - period_start, period_end, calculated_at
 - index: asset_id + calculated_at DESC
 
-### alert_snapshots
+### 6.4 alert_snapshots
 
 Cache alert per aset untuk audit dan explainability.
 
@@ -121,18 +202,36 @@ Cache alert per aset untuk audit dan explainability.
 
 ---
 
-## 6. Service Utama
+## 7. Service Utama
 
-### wazuh_service.py
+### 7.1 firebase_auth_service.py
 
-Satu-satunya gateway ke Wazuh API:
+Tanggung jawab:
+
+- inisialisasi Firebase Admin SDK
+- verifikasi Firebase ID token
+- trigger email verification
+- trigger password reset
+
+### 7.2 auth_service.py
+
+Tanggung jawab:
+
+- sinkronisasi user Firebase ke PostgreSQL
+- enforcement verified email
+- role onboarding
+- penerbitan backend JWT
+
+### 7.3 wazuh_service.py
+
+Gateway tunggal ke Wazuh:
 
 - auth token Wazuh Manager
 - list/detail agent
 - SCA score
 - alert search dari indexer
 
-### scoring_engine.py
+### 7.4 scoring_engine.py
 
 Pure function kalkulasi:
 
@@ -141,7 +240,7 @@ Pure function kalkulasi:
 - calculate_r
 - classify_severity
 
-### scheduler.py
+### 7.5 scheduler.py
 
 Job periodik:
 
@@ -151,7 +250,38 @@ Job periodik:
 
 ---
 
-## 7. Konfigurasi Environment
+## 8. Matriks Akses Endpoint
+
+### 8.1 Public
+
+- GET /health
+- POST /auth/firebase/sign-in
+- POST /auth/firebase/complete-profile
+- POST /auth/firebase/send-email-verification
+- POST /auth/firebase/password-reset
+
+### 8.2 Authenticated (Bearer JWT backend)
+
+- GET /assets
+- GET /assets/{asset_id}
+- GET /scores/latest
+- GET /scores/{asset_id}
+- GET /trends/{asset_id}
+
+### 8.3 Authenticated + Role CISO
+
+- POST /assets/sync/agents
+- POST /simulate/spike
+- POST /simulate/remediation
+
+Catatan:
+
+- Semua endpoint bisnis akan menolak request tanpa bearer token.
+- Token yang dipakai untuk endpoint bisnis adalah token backend, bukan langsung Firebase ID token.
+
+---
+
+## 9. Konfigurasi Environment
 
 Konfigurasi dibaca dari .env melalui config/settings.py.
 
@@ -170,11 +300,20 @@ WAZUH_API_PASSWORD=<password>
 WAZUH_INDEXER_URL=https://<wazuh-host>:9200
 WAZUH_INDEXER_USER=<username>
 WAZUH_INDEXER_PASSWORD=<password>
+WAZUH_VERIFY_SSL=false
 
-# Security
+# App security
 API_SECRET_KEY=<strong-secret>
-RESEND_API_KEY=<resend-api-key>
-OTP_FROM_EMAIL=<verified-sender>
+
+# Firebase
+FIREBASE_PROJECT_ID=<firebase-project-id>
+FIREBASE_WEB_API_KEY=<firebase-web-api-key>
+FIREBASE_SERVICE_ACCOUNT_PATH=./<service-account-file>.json
+FIREBASE_REQUIRE_VERIFIED_EMAIL=true
+
+# Auth rate limits
+AUTH_LOGIN_LIMIT_PER_15M=10
+AUTH_PASSWORD_RESET_LIMIT_PER_HOUR=10
 
 # Scoring
 WEIGHT_VULNERABILITY=0.3
@@ -183,34 +322,36 @@ DECAY_FACTOR=0.5
 SCORING_SCHEDULER_ENABLED=true
 ```
 
-Catatan:
+Catatan keamanan:
 
+- Jangan commit file .env dan service account JSON ke repository.
 - Gunakan WAZUH_VERIFY_SSL=true di production dengan CA valid.
-- Jangan commit file .env ke repository.
+- Rotasi API_SECRET_KEY dan kredensial Wazuh secara berkala.
 
 ---
 
-## 8. Cara Running (Detail)
+## 10. Cara Menjalankan (Lokal Docker)
 
-### 8.1 Prasyarat
+### 10.1 Prasyarat
 
 - Docker dan Docker Compose aktif
 - Port 5432 dan 8000 tersedia
 - Kredensial Wazuh valid di .env
+- Service account Firebase Admin tersedia sesuai FIREBASE_SERVICE_ACCOUNT_PATH
 
-### 8.2 Jalankan layanan
+### 10.2 Build dan jalankan layanan
 
 ```bash
 docker compose up -d --build postgres api
 ```
 
-### 8.3 Jalankan migrasi database
+### 10.3 Jalankan migrasi database
 
 ```bash
 docker compose exec -T api alembic upgrade head
 ```
 
-### 8.4 Validasi container
+### 10.4 Validasi container
 
 ```bash
 docker compose ps
@@ -218,238 +359,149 @@ docker compose ps
 
 Expected:
 
-- risk_scoring_db status healthy
-- risk_scoring_api status healthy
+- risk_scoring_db: healthy
+- risk_scoring_api: healthy
 
-### 8.5 Validasi API base
+### 10.5 Validasi endpoint publik
 
 ```bash
 curl -i http://localhost:8000/health
-curl -i http://localhost:8000/docs
 ```
 
-### 8.6 Sinkronisasi aset dari Wazuh (wajib)
+### 10.6 Login flow (wajib sebelum akses endpoint bisnis)
+
+Langkah login backend:
+
+1. Frontend sign-in ke Firebase dan dapatkan id_token.
+2. Exchange ke backend:
 
 ```bash
-curl -i -X POST http://localhost:8000/assets/sync/agents
-curl -i http://localhost:8000/assets
+curl -i -X POST http://localhost:8000/auth/firebase/sign-in \
+  -H 'Content-Type: application/json' \
+  -d '{"id_token":"<firebase_id_token>"}'
 ```
 
-Jika sinkronisasi berhasil, endpoint assets menampilkan data agent Wazuh.
+3. Jika response role_required=true, selesaikan onboarding:
 
-### 8.7 Menghasilkan snapshot skor pertama
+```bash
+curl -i -X POST http://localhost:8000/auth/firebase/complete-profile \
+  -H 'Content-Type: application/json' \
+  -d '{"id_token":"<firebase_id_token>","role":"Manajemen"}'
+```
 
-Ada dua cara:
+4. Gunakan access_token backend untuk endpoint lain:
 
-1) Otomatis oleh scheduler
+```bash
+curl -i http://localhost:8000/assets \
+  -H 'Authorization: Bearer <backend_access_token>'
+```
 
-- Pastikan SCORING_SCHEDULER_ENABLED=true
-- Tunggu jadwal job berjalan
+### 10.7 Sinkronisasi aset dari Wazuh
 
-2) Manual cepat (untuk smoke test)
+```bash
+curl -i -X POST http://localhost:8000/assets/sync/agents \
+  -H 'Authorization: Bearer <backend_access_token_ciso>'
+```
 
-- Ambil satu asset_id UUID dari GET /assets
-- Panggil simulasi spike:
+### 10.8 Generate snapshot skor pertama
+
+Opsional untuk smoke test jika belum ada data skor:
 
 ```bash
 curl -i -X POST http://localhost:8000/simulate/spike \
+  -H 'Authorization: Bearer <backend_access_token_ciso>' \
   -H 'Content-Type: application/json' \
   -d '{"asset_ids":["<asset_uuid>"],"threat_value":80,"reason":"smoke-test"}'
 ```
 
-Setelah itu endpoint skor akan punya data.
+---
+
+## 11. Error yang Sering Muncul
+
+### 11.1 401 Unauthorized
+
+Penyebab:
+
+- tidak mengirim Authorization header
+- token backend invalid/expired
+
+Perbaikan:
+
+- login ulang melalui flow Firebase -> backend
+- pastikan format header: Authorization: Bearer <token>
+
+### 11.2 403 Forbidden
+
+Penyebab:
+
+- user belum verified email (jika enforcement aktif)
+- role tidak memenuhi (contoh endpoint CISO diakses role Manajemen)
+
+Perbaikan:
+
+- selesaikan verifikasi email Firebase
+- gunakan akun dengan role yang sesuai
+
+### 11.3 503 No risk scores available yet
+
+Penyebab:
+
+- tabel risk_scores masih kosong
+
+Perbaikan:
+
+- sinkronisasi aset dari Wazuh
+- tunggu scheduler atau jalankan simulasi spike untuk bootstrap data
 
 ---
 
-## 9. Kenapa Muncul 503 No risk scores available yet
+## 12. Integrasi Frontend (Ringkas)
 
-Respons berikut:
+Frontend harus:
 
-- status_code 503
-- message No risk scores available yet. Run scoring engine first.
+1. Sign-in ke Firebase (email/password atau Google).
+2. Ambil Firebase ID token.
+3. Exchange ke backend via /auth/firebase/sign-in.
+4. Simpan backend access token.
+5. Gunakan backend token untuk seluruh endpoint bisnis.
 
-artinya normal pada kondisi ini:
+Dokumen detail frontend tersedia di:
 
-- Tabel risk_scores masih kosong.
-- Aset sudah ada, tetapi belum pernah dihitung skor.
+- FIREBASE_FRONTEND_INTEGRATION.md
 
-Langkah perbaikan:
+---
 
-1. Pastikan assets sudah tersinkron dari Wazuh: POST /assets/sync/agents.
-2. Jalankan jalur pembentukan skor pertama:
-   - tunggu scheduler, atau
-   - panggil POST /simulate/spike dengan UUID asset.
-3. Ulangi GET /scores/latest.
+## 13. Testing
 
-Jika tetap 503:
-
-- Cek Wazuh connectivity dan kredensial .env.
-- Cek log container API:
+Jalankan test API utama:
 
 ```bash
-docker compose logs --tail=200 api
+python -m pytest -q tests/test_api.py
 ```
 
----
-
-## 10. API yang Diekspos
-
-### Health & metadata
-
-- GET /health
-- GET /
-- GET /docs
-
-### Auth
-
-- POST /auth/register
-- POST /auth/login
-- POST /auth/verify-otp
-- POST /auth/resend-otp
-
-### Assets
-
-- POST /assets/sync/agents
-- GET /assets
-- GET /assets/{asset_id}
-
-### Scores
-
-- GET /scores/latest
-- GET /scores/{asset_id}
-- GET /trends/{asset_id}?period=1d|7d|30d|90d
-
-### Simulation
-
-- POST /simulate/spike
-- POST /simulate/remediation
-
----
-
-## 11. Catatan Khusus Tim Frontend
-
-Bagian ini penting sebagai kontrak integrasi FE-BE.
-
-### 11.1 Endpoint yang direkomendasikan untuk layar utama
-
-1. Dashboard summary
-
-- GET /scores/latest
-- Tujuan: menampilkan ranking aset berdasarkan score_r terbaru.
-
-2. Asset inventory
-
-- GET /assets
-- Tujuan: menampilkan daftar agent/aset hasil sinkronisasi Wazuh.
-
-3. Asset detail
-
-- GET /assets/{asset_id}
-- GET /scores/{asset_id}
-- GET /trends/{asset_id}?period=7d
-
-4. Simulasi
-
-- POST /simulate/spike
-- POST /simulate/remediation
-
-### 11.2 Alur data FE yang disarankan
-
-1. Saat halaman dashboard load:
-
-- panggil GET /scores/latest
-- jika 503, tampilkan status kosong dengan CTA:
-  - Sinkronkan aset
-  - Jalankan simulasi awal
-
-2. Saat halaman aset load:
-
-- panggil GET /assets
-- simpan asset_id UUID dari response untuk semua request berikutnya
-
-3. Saat halaman detail aset load:
-
-- panggil GET /scores/{asset_id}
-- panggil GET /trends/{asset_id}?period=7d
-
-### 11.3 Kontrak penting untuk frontend
-
-- asset_id selalu UUID, bukan asset-001 style lama.
-- Endpoint scores dan trends akan mengembalikan 400 jika asset_id bukan UUID valid.
-- Endpoint latest bisa mengembalikan 503 jika belum ada snapshot skor.
-- Semua error mengikuti schema standar: status_code, message, detail, request_id.
-
-### 11.4 Daftar status code yang wajib ditangani FE
-
-- 200: sukses
-- 201: resource dibuat (contoh register)
-- 400: invalid input atau invalid UUID
-- 401/403: auth/permission
-- 404: asset/data tidak ditemukan
-- 422: validation error
-- 503: data scoring belum tersedia atau integrasi eksternal gagal
-
----
-
-## 12. Testing
-
-Targeted integration tests:
+Targeted tests:
 
 ```bash
 python -m pytest -q tests/test_wazuh_service.py tests/test_scheduler.py
 ```
 
-Catatan:
+---
 
-- Setelah migrasi ke Wazuh-only asset flow, beberapa legacy test yang mengasumsikan mock id non-UUID perlu disesuaikan.
+## 14. Checklist Production Readiness
+
+- Batasi CORS origin (jangan wildcard)
+- Lindungi /docs dan /openapi.json via gateway auth/IP allowlist
+- Gunakan HTTPS end-to-end
+- Aktifkan SSL verify untuk Wazuh
+- Simpan secret pada secret manager
+- Tambahkan observability: logs terstruktur, metrics, tracing, alerting
 
 ---
 
-## 13. Keamanan dan Operasional
+## 15. Kontak dan Ownership
 
-Sudah diimplementasikan:
+- Domain Auth: Backend Platform
+- Domain Wazuh Integration: Security Engineering
+- Domain Scoring Model: Risk Analytics
 
-- bcrypt password hashing
-- JWT bearer auth
-- OTP verification + retry policy email
-- rate limiting endpoint auth sensitif
-- request id dan structured error response
-
-Rekomendasi production:
-
-- aktifkan SSL verify ke Wazuh dengan CA valid
-- batasi CORS origin
-- rotasi secret berkala
-- aktifkan observability (metrics, tracing, alerting)
-
----
-
-## 14. Troubleshooting Cepat
-
-1. API unhealthy di docker compose ps
-
-- cek logs api
-- pastikan migrasi sudah jalan
-
-2. POST /assets/sync/agents gagal
-
-- cek WAZUH_API_URL, kredensial, dan network dari container API
-
-3. GET /scores/latest 503
-
-- belum ada snapshot pertama di risk_scores
-- jalankan simulasi spike atau tunggu scheduler
-
-4. Simulasi 400 none of provided asset IDs found
-
-- pastikan pakai UUID dari GET /assets
-
----
-
-## 15. Arah Pengembangan Lanjutan
-
-- pecah schemas per domain
-- tambah RBAC endpoint sensitif (CISO vs Manajemen)
-- tambah integration test end-to-end Wazuh -> scoring -> trend
-- tambah endpoint dashboard khusus summary agar payload lebih ringan
-
+Perubahan kontrak API harus diikuti pembaruan README ini dan changelog internal tim.

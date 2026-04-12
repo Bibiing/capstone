@@ -12,14 +12,19 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from api.dependencies.auth import get_current_user, require_roles
 from api.dependencies.db import get_db_session
-from api.schemas import AssetListResponse, AssetResponse
+from api.schemas import AssetListResponse, AssetResponse, AuthRole
 from api.services.wazuh_service import WazuhService
 from database import queries
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/assets", tags=["Assets"])
+router = APIRouter(
+    prefix="/assets",
+    tags=["Assets"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.post(
@@ -29,7 +34,10 @@ router = APIRouter(prefix="/assets", tags=["Assets"])
     summary="Sync assets from Wazuh",
     description="Pull agents from Wazuh Manager API and upsert into assets table.",
 )
-async def sync_assets_from_wazuh(db: Session = Depends(get_db_session)) -> dict:
+async def sync_assets_from_wazuh(
+    db: Session = Depends(get_db_session),
+    _current_user=Depends(require_roles(AuthRole.CISO)),
+) -> dict:
     service = WazuhService()
 
     try:
@@ -85,7 +93,10 @@ async def list_assets(
     summary="Get one asset",
     description="Get one asset by UUID.",
 )
-async def get_asset(asset_id: str, db: Session = Depends(get_db_session)) -> AssetResponse:
+async def get_asset(
+    asset_id: str,
+    db: Session = Depends(get_db_session),
+) -> AssetResponse:
     try:
         asset_uuid = UUID(asset_id)
     except ValueError:

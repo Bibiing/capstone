@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 from api.schemas import ErrorResponse, HealthCheckResponse
 from api.services.scheduler import ScoringScheduler
 from config.settings import get_settings
+from api.dependencies.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +201,7 @@ async def health_check(request: Request) -> HealthCheckResponse:
     summary="API information",
     response_model=dict,
 )
-async def root() -> dict:
+async def root(_current_user=Depends(get_current_user)) -> dict:
     """Return API information and available endpoints."""
     return {
         "name": "Cyber Risk Scoring Engine API",
@@ -210,10 +211,10 @@ async def root() -> dict:
         "redoc": "/redoc",
         "endpoints": {
             "auth": [
-                "POST /auth/register",
-                "POST /auth/login",
-                "POST /auth/verify-otp",
-                "POST /auth/resend-otp",
+                "POST /auth/firebase/sign-in",
+                "POST /auth/firebase/complete-profile",
+                "POST /auth/firebase/send-email-verification",
+                "POST /auth/firebase/password-reset",
             ],
             "assets": [
                 "GET /assets",

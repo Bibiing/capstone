@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from api.dependencies.auth import get_current_user
 from api.dependencies.db import get_db_session
 from api.schemas import (
     LatestScoresResponse,
@@ -21,7 +22,10 @@ from database import queries
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["Scores"])
+router = APIRouter(
+    tags=["Scores"],
+    dependencies=[Depends(get_current_user)],
+)
 settings = get_settings()
 
 

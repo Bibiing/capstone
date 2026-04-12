@@ -3,7 +3,6 @@ SQLAlchemy ORM models for the Risk Scoring Engine.
 
 Tables:
     users           System users with authentication credentials.
-    otp_codes       One-Time Password codes for email verification.
     assets          Registered assets synced from Wazuh Manager.
     risk_scores     Time-series of computed risk score snapshots.
     alert_snapshots Raw alert cache per scoring period for audit trail.
@@ -67,7 +66,8 @@ class User(Base):
     - user_id: Unique identifier (UUID-like, or auto-incremented)
     - username: Unique username for login
     - email: Unique email address (used for OTP-based verification)
-    - password_hash: bcrypt-hashed password (never store plain text)
+        - password_hash: bcrypt-hashed password (never store plain text)
+            For Firebase-managed users this stores a sentinel value.
     - role: User permissions level (CISO, Manajemen)
     - is_active: Whether account is enabled (false until email verified)
     - is_verified: Whether email has been verified via OTP
@@ -89,6 +89,22 @@ class User(Base):
         String(255), nullable=False,
         comment="bcrypt-hashed password. Never store plain text."
     )
+    firebase_uid: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, unique=True, index=True,
+        comment="Unique Firebase user UID for external identity mapping."
+    )
+    auth_provider: Mapped[Optional[str]] = mapped_column(
+        String(30), nullable=True,
+        comment="Primary auth provider, e.g. password, google.com."
+    )
+    display_name: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True,
+        comment="Display name from identity provider profile."
+    )
+    avatar_url: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True,
+        comment="Profile photo URL from identity provider profile."
+    )
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, native_enum=False), nullable=False, default=UserRole.MANAJEMEN,
         comment="User permission level: CISO, Manajemen."
@@ -108,71 +124,10 @@ class User(Base):
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
 
-    # Relationships
-    otp_codes: Mapped[list["OTPCode"]] = relationship(
-        "OTPCode", back_populates="user", cascade="all, delete-orphan"
-    )
-
     def __repr__(self) -> str:
         return (
             f"User(id={self.user_id}, username={self.username!r}, "
             f"email={self.email!r}, is_verified={self.is_verified})"
-        )
-
-
-class OTPCode(Base):
-    """
-    One-Time Password (OTP) for email verification during registration.
-
-    Fields:
-    - otp_id: Primary key
-    - user_id: FK to user
-    - code: The OTP value (typically 6 digits, will be emailed)
-    - expires_at: When this OTP expires
-    - is_used: Whether this OTP has been successfully verified
-    - attempts: Count of failed verification attempts
-    - created_at: When this OTP was generated
-
-    Logic:
-    - Generate OTP on registration
-    - Email the code to user (later feature)
-    - User enters code via /verify-otp endpoint
-    - If code matches and not expired → mark is_used=true, set user.is_verified=true
-    - If max attempts exceeded → require /resend-otp
-    """
-
-    __tablename__ = "otp_codes"
-
-    otp_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    code: Mapped[str] = mapped_column(
-        String(10), nullable=False,
-        comment="OTP code (e.g., 6-digit numeric string)."
-    )
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        comment="Timestamp when this OTP becomes invalid."
-    )
-    is_used: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False,
-        comment="True once this OTP has been successfully verified."
-    )
-    attempts: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0,
-        comment="Count of failed verification attempts."
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, nullable=False
-    )
-
-    user: Mapped[User] = relationship("User", back_populates="otp_codes")
-
-    def __repr__(self) -> str:
-        return (
-            f"OTPCode(id={self.otp_id}, user_id={self.user_id}, "
-            f"is_used={self.is_used}, attempts={self.attempts})"
         )
 
 

@@ -56,3 +56,7 @@ database/migrations/versions/*.pyc
 
 # docs
 docs/
+
+
+#secret
+jrisk-auth-firebase-adminsdk-fbsvc-b6e505e572.json

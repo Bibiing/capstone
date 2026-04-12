@@ -13,9 +13,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from api.dependencies.auth import require_roles
 from api.dependencies.db import get_db_session
 from api.services.scoring_engine import calculate_r, classify_severity
 from api.schemas import (
+    AuthRole,
     RiskScoreBreakdown,
     RiskScoreResponse,
     SimulateSpikeRequest,
@@ -28,9 +30,14 @@ from database import queries
 from database.models import RiskScore
 
 logger = logging.getLogger(__name__)
-
-router = APIRouter(prefix="/simulate", tags=["Simulation"])
 settings = get_settings()
+
+
+router = APIRouter(
+    prefix="/simulate",
+    tags=["Simulation"],
+    dependencies=[Depends(require_roles(AuthRole.CISO))],
+)
 
 
 # ============================================================================

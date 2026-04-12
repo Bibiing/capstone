@@ -172,41 +172,29 @@ class Settings(BaseSettings):
         description="w2: Active alert/threat weight in the final risk formula.",
     )
 
-    # ── Email & OTP Configuration (Resend API) ────────────────────────────────
-    resend_api_key: SecretStr = Field(
-        default=SecretStr("re_xxxxxxxxx"),
+    # ── Firebase Authentication ───────────────────────────────────────────────
+    firebase_project_id: str = Field(
+        default="",
+        description="Firebase project ID used to validate incoming ID tokens.",
+    )
+    firebase_web_api_key: str = Field(
+        default="",
         description=(
-            "Resend API key for sending OTP emails. "
-            "Get from: https://resend.com/api-keys (format: re_xxxxx)"
+            "Firebase Web API key used for Identity Toolkit actions "
+            "(send email verification / password reset)."
         ),
     )
-    otp_from_email: str = Field(
-        default="onboarding@resend.dev",
-        description="From email address for OTP emails. Must be verified in Resend.",
+    firebase_service_account_path: str | None = Field(
+        default=None,
+        description="Absolute path to Firebase service account JSON file.",
     )
-    otp_expiration_minutes: int = Field(
-        default=15,
-        ge=1,
-        le=60,
-        description="OTP code expiration time in minutes.",
+    firebase_service_account_json: str | None = Field(
+        default=None,
+        description="Inline JSON string for Firebase service account credentials.",
     )
-    otp_max_attempts: int = Field(
-        default=5,
-        ge=1,
-        le=10,
-        description="Maximum failed OTP verification attempts.",
-    )
-    otp_email_max_retries: int = Field(
-        default=3,
-        ge=1,
-        le=10,
-        description="Maximum retry attempts for OTP email delivery.",
-    )
-    otp_email_retry_delay_seconds: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=30.0,
-        description="Base delay in seconds between OTP email retries.",
+    firebase_require_verified_email: bool = Field(
+        default=True,
+        description="Require Firebase email_verified=true before backend session activation.",
     )
 
     # ── JWT & Auth Configuration ──────────────────────────────────────────────
@@ -238,11 +226,11 @@ class Settings(BaseSettings):
         le=500,
         description="Max OTP verify requests per email per 15 minutes.",
     )
-    auth_resend_limit_per_hour: int = Field(
+    auth_password_reset_limit_per_hour: int = Field(
         default=10,
         ge=1,
         le=500,
-        description="Max OTP resend requests per email per hour.",
+        description="Max password reset requests per email per hour.",
     )
 
     # ── REST API ──────────────────────────────────────────────────────────────
