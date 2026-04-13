@@ -94,6 +94,12 @@ pipeline {
                 withSonarQubeEnv("${SONARQUBE_ENV}") {
                     sh '''
                         set -e
+                        docker run --rm \
+                          -v "${WORKSPACE}:/app" \
+                          -w /app \
+                          alpine:3.20 \
+                          sh -c 'rm -rf /app/.pytest_cache /app/.mypy_cache /app/.ruff_cache /app/.scannerwork'
+
                         ${SCANNER_HOME}/bin/sonar-scanner \
                           -Dproject.settings=sonar-project.properties
                     '''
