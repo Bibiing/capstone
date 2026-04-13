@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     options {
-        timestamps()
+        wrap([$class: 'TimestamperBuildWrapper'])
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
