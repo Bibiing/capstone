@@ -19,6 +19,7 @@ pipeline {
         DOCKER_REGISTRY = 'docker.io'
         DOCKER_BUILDKIT = '1'
         PIP_CACHE_DIR = "${WORKSPACE}/.pip-cache"
+        TESTS_PASSED = 'true'
     }
 
     stages {
@@ -38,25 +39,37 @@ pipeline {
 
         stage('Test') {
             steps {
-                sh '''
-                    set -e
-                    git config --global --add safe.directory "${WORKSPACE}"
-                    mkdir -p "${PIP_CACHE_DIR}"
-                    docker run --rm \
-                      -v "${WORKSPACE}:/app" \
-                      -v "${PIP_CACHE_DIR}:/root/.cache/pip" \
-                      -w /app \
-                      python:3.11-slim \
-                      sh -c "pip install --upgrade pip && \
-                             pip install -r requirements.txt && \
-                             python -m pytest tests/ -q \
-                               --junitxml=pytest-report.xml \
-                               --cov=api \
-                               --cov=database \
-                               --cov=config \
-                               --cov-report=xml:coverage.xml \
-                               --cov-report=term-missing"
-                '''
+                script {
+                    int testStatus = sh(
+                        script: '''
+                            set -e
+                            git config --global --add safe.directory "${WORKSPACE}"
+                            mkdir -p "${PIP_CACHE_DIR}"
+                            docker run --rm \
+                              -v "${WORKSPACE}:/app" \
+                              -v "${PIP_CACHE_DIR}:/root/.cache/pip" \
+                              -w /app \
+                              python:3.11-slim \
+                              sh -c "pip install --upgrade pip && \
+                                     pip install -r requirements.txt && \
+                                     python -m pytest tests/ -q \
+                                       --junitxml=pytest-report.xml \
+                                       --cov=api \
+                                       --cov=database \
+                                       --cov=config \
+                                       --cov-report=xml:coverage.xml \
+                                       --cov-report=term-missing"
+                        ''',
+                        returnStatus: true
+                    )
+
+                    if (testStatus != 0) {
+                        env.TESTS_PASSED = 'false'
+                        currentBuild.result = 'UNSTABLE'
+                    } else {
+                        env.TESTS_PASSED = 'true'
+                    }
+                }
             }
             post {
                 always {
@@ -87,6 +100,11 @@ pipeline {
         }
 
         stage('Build Docker Image') {
+            when {
+                expression {
+                    return env.TESTS_PASSED == 'true'
+                }
+            }
             steps {
                 sh '''
                     set -e
@@ -102,6 +120,11 @@ pipeline {
         }
 
         stage('Push Docker Image') {
+            when {
+                expression {
+                    return env.TESTS_PASSED == 'true'
+                }
+            }
             steps {
                 withCredentials([
                     string(
@@ -129,6 +152,9 @@ pipeline {
     post {
         success {
             echo "Pipeline sukses. Image: ${IMAGE_URI}"
+        }
+        unstable {
+            echo 'Pipeline unstable: unit test gagal'
         }
         failure {
             echo 'Pipeline gagal'
