@@ -50,15 +50,25 @@ pipeline {
                               -v "${PIP_CACHE_DIR}:/root/.cache/pip" \
                               -w /app \
                               python:3.11-slim \
-                              sh -c "pip install --upgrade pip && \
-                                     pip install -r requirements.txt && \
-                                     python -m pytest tests/ -q \
-                                       --junitxml=pytest-report.xml \
-                                       --cov=api \
-                                       --cov=database \
-                                       --cov=config \
-                                       --cov-report=xml:coverage.xml \
-                                       --cov-report=term-missing"
+                              sh -c '
+                                  set -e
+                                  rm -rf /app/.pytest_cache /app/.mypy_cache /app/.ruff_cache || true
+                                  pip install --upgrade pip
+                                  pip install -r requirements.txt
+                                  set +e
+                                  python -m pytest tests/ -q \
+                                    -p no:cacheprovider \
+                                    --junitxml=pytest-report.xml \
+                                    --cov=api \
+                                    --cov=database \
+                                    --cov=config \
+                                    --cov-report=xml:coverage.xml \
+                                    --cov-report=term-missing
+                                  test_status=$?
+                                  set -e
+                                  chmod -R a+rX /app/.pip-cache 2>/dev/null || true
+                                  exit $test_status
+                              '
                         ''',
                         returnStatus: true
                     )
