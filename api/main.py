@@ -211,8 +211,8 @@ async def root(_current_user=Depends(get_current_user)) -> dict:
         "redoc": "/redoc",
         "endpoints": {
             "auth": [
+                "POST /auth/firebase/register",
                 "POST /auth/firebase/sign-in",
-                "POST /auth/firebase/complete-profile",
                 "POST /auth/firebase/send-email-verification",
                 "POST /auth/firebase/password-reset",
             ],

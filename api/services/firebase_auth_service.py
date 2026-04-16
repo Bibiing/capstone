@@ -69,6 +69,42 @@ class FirebaseAuthService:
 
         return decoded
 
+    def create_email_password_user(
+        self,
+        *,
+        email: str,
+        password: str,
+        display_name: str,
+    ) -> auth.UserRecord:
+        """Create Firebase user with email/password credentials."""
+        try:
+            return auth.create_user(
+                app=self.app,
+                email=email,
+                password=password,
+                display_name=display_name,
+                email_verified=False,
+                disabled=False,
+            )
+        except auth.EmailAlreadyExistsError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email is already registered in Firebase.",
+            )
+        except FirebaseError:
+            logger.exception("Firebase user creation failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication provider temporarily unavailable.",
+            )
+
+    def delete_user(self, uid: str) -> None:
+        """Delete Firebase user (used for compensation on partial failures)."""
+        try:
+            auth.delete_user(uid, app=self.app)
+        except FirebaseError:
+            logger.exception("Failed to delete Firebase user during rollback | uid=%s", uid)
+
     async def send_password_reset_email(self, email: str) -> None:
         """Trigger Firebase password reset email via Identity Toolkit."""
         payload = {
@@ -84,6 +120,61 @@ class FirebaseAuthService:
             "idToken": id_token,
         }
         await self._send_oob_code(payload)
+
+    async def send_email_verification_for_new_user(self, *, email: str, password: str) -> None:
+        """Sign in a newly created email/password user and send verification email.
+
+        Firebase Identity Toolkit requires an ID token for VERIFY_EMAIL.
+        For backend-assisted registration, we obtain a short-lived ID token
+        by signing in once with the submitted credentials.
+        """
+        id_token = await self._sign_in_email_password(email=email, password=password)
+        await self.send_email_verification(id_token=id_token)
+
+    async def _sign_in_email_password(self, *, email: str, password: str) -> str:
+        if not self._settings.firebase_web_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="FIREBASE_WEB_API_KEY is not configured.",
+            )
+
+        url = (
+            "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+            f"?key={self._settings.firebase_web_api_key}"
+        )
+        payload = {
+            "email": email,
+            "password": password,
+            "returnSecureToken": True,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, json=payload)
+        except httpx.HTTPError:
+            logger.exception("Identity Toolkit sign-in request failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to contact Firebase Identity Toolkit.",
+            )
+
+        if resp.status_code != status.HTTP_200_OK:
+            logger.warning("Identity Toolkit sign-in error | status=%s body=%s", resp.status_code, resp.text)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Firebase email action is temporarily unavailable.",
+            )
+
+        body = resp.json()
+        id_token = body.get("idToken")
+        if not id_token:
+            logger.warning("Identity Toolkit sign-in response missing idToken")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Firebase email action is temporarily unavailable.",
+            )
+
+        return id_token
 
     async def _send_oob_code(self, payload: dict) -> None:
         if not self._settings.firebase_web_api_key:

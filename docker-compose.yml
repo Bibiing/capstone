@@ -78,33 +78,6 @@ services:
   #   volumes:
   #     - .:/app
 
-  # ── FastAPI — uncomment in Sprint 3-4 ────────────────────────────────────────
-  # api:
-  #   build: .
-  #   container_name: risk_scoring_api
-  #   command: uvicorn api.main:app --host 0.0.0.0 --port 8000
-  #   ports:
-  #     - "8000:8000"
-  #   env_file: .env
-  #   environment:
-  #     - DATABASE_URL=${DATABASE_URL}
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   restart: unless-stopped
-
-  # ── Streamlit Dashboard — uncomment in Sprint 5 ──────────────────────────────
-  # dashboard:
-  #   build: .
-  #   container_name: risk_scoring_dashboard
-  #   command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
-  #   ports:
-  #     - "8501:8501"
-  #   env_file: .env
-  #   depends_on:
-  #     - api
-  #   restart: unless-stopped
-
 volumes:
   postgres_data:
   pgadmin_data:

@@ -55,16 +55,11 @@ Pengecualian endpoint publik:
 - Endpoint auth Firebase di bawah /auth/firebase/\*
 - /docs dan /openapi.json (default FastAPI, sebaiknya dibatasi di production lewat gateway)
 
-### 2.3 Role onboarding pasca sign-in
+### 2.3 Aktivasi otomatis setelah verifikasi email
 
-Setelah sign-in Firebase pertama kali, user belum langsung mendapat full akses. User harus menyelesaikan role onboarding:
+Role wajib dipilih saat register. Setelah email Firebase terverifikasi, backend akan mengaktifkan akun otomatis pada sign-in pertama.
 
-- POST /auth/firebase/complete-profile
-
-Role yang didukung:
-
-- CISO
-- Manajemen
+Respons sign-in pertama setelah verifikasi akan menandai bahwa akun baru diaktivasi, sehingga frontend dapat mengarahkan user kembali ke halaman login untuk mendapatkan sesi backend pada login berikutnya.
 
 ### 2.4 Legacy flow dihapus
 
@@ -256,7 +251,6 @@ Job periodik:
 
 - GET /health
 - POST /auth/firebase/sign-in
-- POST /auth/firebase/complete-profile
 - POST /auth/firebase/send-email-verification
 - POST /auth/firebase/password-reset
 
@@ -372,6 +366,9 @@ curl -i http://localhost:8000/health
 
 Langkah login backend:
 
+0. Setelah `POST /auth/firebase/register`, backend otomatis mencoba mengirim email verifikasi.
+   Frontend sebaiknya arahkan user ke halaman "Check your email" dan sediakan tombol resend.
+
 1. Frontend sign-in ke Firebase dan dapatkan id_token.
 2. Exchange ke backend:
 
@@ -381,15 +378,9 @@ curl -i -X POST http://localhost:8000/auth/firebase/sign-in \
   -d '{"id_token":"<firebase_id_token>"}'
 ```
 
-3. Jika response role_required=true, selesaikan onboarding:
+3. Jika response sign-in pertama berisi `session: null` dan message aktivasi, arahkan user ke halaman login lalu lakukan sign-in ulang.
 
-```bash
-curl -i -X POST http://localhost:8000/auth/firebase/complete-profile \
-  -H 'Content-Type: application/json' \
-  -d '{"id_token":"<firebase_id_token>","role":"Manajemen"}'
-```
-
-4. Gunakan access_token backend untuk endpoint lain:
+4. Gunakan access_token backend dari sign-in kedua untuk endpoint lain:
 
 ```bash
 curl -i http://localhost:8000/assets \
@@ -464,10 +455,6 @@ Frontend harus:
 3. Exchange ke backend via /auth/firebase/sign-in.
 4. Simpan backend access token.
 5. Gunakan backend token untuk seluruh endpoint bisnis.
-
-Dokumen detail frontend tersedia di:
-
-- FIREBASE_FRONTEND_INTEGRATION.md
 
 ---
 

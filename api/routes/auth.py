@@ -17,8 +17,9 @@ from api.dependencies.auth import get_auth_service
 from api.dependencies.db import get_db_session
 from api.schemas import (
     FirebaseActionResponse,
-    FirebaseCompleteProfileRequest,
     FirebasePasswordResetRequest,
+    FirebaseRegisterRequest,
+    FirebaseRegisterResponse,
     FirebaseSessionResponse,
     FirebaseSignInRequest,
 )
@@ -27,6 +28,26 @@ from api.services.auth_service import AuthService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+@router.post(
+    "/firebase/register",
+    response_model=FirebaseRegisterResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register new Firebase email/password account",
+    description=(
+        "Create Firebase user with email/password and persist initial local profile "
+        "(name, username, role) in PostgreSQL."
+    ),
+)
+async def firebase_register(
+    request: FirebaseRegisterRequest,
+    db: Session = Depends(get_db_session),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> FirebaseRegisterResponse:
+    response = await auth_service.firebase_register(db=db, request=request)
+    logger.info("Firebase register success | uid=%s | email=%s", response.firebase_uid, response.email)
+    return response
 
 
 @router.post(
@@ -45,24 +66,11 @@ async def firebase_sign_in(
     auth_service: AuthService = Depends(get_auth_service),
 ) -> FirebaseSessionResponse:
     response = await auth_service.firebase_sign_in(db=db, request=request)
-    logger.info("Firebase sign-in success | uid=%s | role_required=%s", response.firebase_uid, response.role_required)
-    return response
-
-
-@router.post(
-    "/firebase/complete-profile",
-    response_model=FirebaseSessionResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Complete post-verification profile",
-    description="Set role after email verification. Required once before full access is granted.",
-)
-async def firebase_complete_profile(
-    request: FirebaseCompleteProfileRequest,
-    db: Session = Depends(get_db_session),
-    auth_service: AuthService = Depends(get_auth_service),
-) -> FirebaseSessionResponse:
-    response = await auth_service.complete_profile(db=db, request=request)
-    logger.info("Firebase profile completed | uid=%s | role=%s", response.firebase_uid, response.role)
+    logger.info(
+        "Firebase sign-in success | uid=%s | account_activated=%s",
+        response.firebase_uid,
+        response.account_activated,
+    )
     return response
 
 

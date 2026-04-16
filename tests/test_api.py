@@ -104,6 +104,16 @@ class TestAuthAPI:
         async def _noop_async(*args, **kwargs):
             return None
 
+        async def _send_email_verification_for_new_user(self, *, email: str, password: str):
+            return None
+
+        class _DummyFirebaseUser:
+            def __init__(self, uid: str):
+                self.uid = uid
+
+        def _create_user(self, *, email: str, password: str, display_name: str):
+            return _DummyFirebaseUser(uid=f"firebase-created-{uuid4().hex[:10]}")
+
         monkeypatch.setattr(
             "api.services.firebase_auth_service.FirebaseAuthService.verify_id_token",
             lambda self, id_token: claims,
@@ -116,10 +126,44 @@ class TestAuthAPI:
             "api.services.firebase_auth_service.FirebaseAuthService.send_password_reset_email",
             _noop_async,
         )
+        monkeypatch.setattr(
+            "api.services.firebase_auth_service.FirebaseAuthService.create_email_password_user",
+            _create_user,
+        )
+        monkeypatch.setattr(
+            "api.services.firebase_auth_service.FirebaseAuthService.delete_user",
+            lambda self, uid: None,
+        )
+        monkeypatch.setattr(
+            "api.services.firebase_auth_service.FirebaseAuthService.send_email_verification_for_new_user",
+            _send_email_verification_for_new_user,
+        )
 
         return claims
 
-    def test_firebase_sign_in_creates_pending_user(self):
+    def test_firebase_register_creates_backend_profile(self):
+        suffix = uuid4().hex[:8]
+        response = auth_client.post(
+            "/auth/firebase/register",
+            json={
+                "name": "User Baru",
+                "username": f"user_{suffix}",
+                "email": f"user_{suffix}@example.com",
+                "role": "Manajemen",
+                "password": "password123",
+                "confirm_password": "password123",
+            },
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["email_verified"] is False
+        assert data["email_verification_sent"] is True
+        assert data["role_required"] is False
+        assert data["role"] == "Manajemen"
+        assert data["firebase_uid"].startswith("firebase-created-")
+
+    def test_firebase_sign_in_auto_activates_verified_user(self):
         response = auth_client.post(
             "/auth/firebase/sign-in",
             json={"id_token": "firebase-id-token-1234567890"},
@@ -127,20 +171,28 @@ class TestAuthAPI:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["role_required"] is True
+        assert data["role_required"] is False
+        assert data["account_activated"] is True
         assert data["firebase_uid"].startswith("firebase-uid-")
         assert data["email_verified"] is True
         assert data["session"] is None
+        assert "Please sign in again" in data["message"]
 
-    def test_firebase_complete_profile_returns_session(self):
-        response = auth_client.post(
-            "/auth/firebase/complete-profile",
-            json={"id_token": "firebase-id-token-1234567890", "role": "Manajemen"},
+    def test_second_sign_in_returns_backend_session(self):
+        first = auth_client.post(
+            "/auth/firebase/sign-in",
+            json={"id_token": "firebase-id-token-1234567890"},
         )
+        assert first.status_code == 200
 
+        response = auth_client.post(
+            "/auth/firebase/sign-in",
+            json={"id_token": "firebase-id-token-1234567890"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["role_required"] is False
+        assert data["account_activated"] is True
         assert data["role"] == "Manajemen"
         assert data["session"] is not None
         assert data["session"]["token_type"] == "bearer"

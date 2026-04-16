@@ -2,7 +2,7 @@
 Pydantic schemas for request/response validation and documentation.
 
 Organized by feature:
-    - Auth schemas: Firebase sign-in, complete-profile, and backend session
+    - Auth schemas: Firebase sign-in/register and backend session
     - Asset schemas: Asset CRUD
     - Score schemas: Risk score queries and responses
     - Error schemas: Standard error response format
@@ -82,11 +82,32 @@ class FirebaseSignInRequest(BaseModel):
     )
 
 
-class FirebaseCompleteProfileRequest(BaseModel):
-    """Request for role onboarding after Firebase verification."""
+class FirebaseRegisterRequest(BaseModel):
+    """Request payload for backend-assisted Firebase email/password sign-up."""
 
-    id_token: str = Field(..., min_length=20)
-    role: AuthRole = Field(..., description="Role chosen by account creator.")
+    name: str = Field(..., min_length=2, max_length=100, description="Full display name.")
+    username: str = Field(..., min_length=3, max_length=50, description="Unique application username.")
+    email: EmailStr = Field(..., description="Email address for Firebase account.")
+    role: AuthRole = Field(..., description="Initial business role selected by user.")
+    password: str = Field(..., min_length=8, max_length=128, description="Account password.")
+    confirm_password: str = Field(..., min_length=8, max_length=128, description="Password confirmation.")
+
+
+class FirebaseRegisterResponse(BaseModel):
+    """Response after successful Firebase account registration."""
+
+    user_id: int
+    firebase_uid: str
+    email: str
+    username: str
+    role: AuthRole
+    email_verified: bool
+    email_verification_sent: bool = Field(
+        ...,
+        description="True if backend successfully requested Firebase verification email.",
+    )
+    role_required: bool
+    message: str
 
 
 class FirebasePasswordResetRequest(BaseModel):
@@ -111,14 +132,18 @@ class FirebaseSessionResponse(BaseModel):
     role: AuthRole
     provider: str = Field(..., description="Firebase provider, e.g. password or google.com")
     email_verified: bool
+    account_activated: bool = Field(
+        ...,
+        description="True if account is active for backend access (or just activated on this sign-in).",
+    )
     role_required: bool = Field(
         ...,
-        description="True when user must complete role onboarding before getting full backend session.",
+        description="Legacy compatibility flag. Always false in current Firebase-first flow.",
     )
     message: str
     session: Optional[LoginResponse] = Field(
         default=None,
-        description="App session token payload. Null if role onboarding is still required.",
+        description="App session token payload. Null when account was just activated and user must sign in once more.",
     )
 
 
