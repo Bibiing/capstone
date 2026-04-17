@@ -65,12 +65,12 @@ class User(Base):
     Fields:
     - user_id: Unique identifier (UUID-like, or auto-incremented)
     - username: Unique username for login
-    - email: Unique email address (used for OTP-based verification)
+    - email: Unique email address (used for Firebase identity mapping)
         - password_hash: bcrypt-hashed password (never store plain text)
             For Firebase-managed users this stores a sentinel value.
     - role: User permissions level (CISO, Manajemen)
-    - is_active: Whether account is enabled (false until email verified)
-    - is_verified: Whether email has been verified via OTP
+    - is_active: Whether account is enabled for backend access
+    - is_verified: Whether email has been verified in Firebase
     - created_at, updated_at: Audit timestamps
     """
 
@@ -83,7 +83,7 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(
         String(100), nullable=False, unique=True, index=True,
-        comment="Unique email address (used for OTP verification)."
+        comment="Unique email address (used for Firebase identity mapping)."
     )
     password_hash: Mapped[str] = mapped_column(
         String(255), nullable=False,
@@ -115,7 +115,7 @@ class User(Base):
     )
     is_verified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False,
-        comment="Email address verified via OTP."
+        comment="Email address verified in Firebase."
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
@@ -157,6 +157,11 @@ class Asset(Base):
         comment="Agent ID from Wazuh Manager API.",
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    asset_type: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Asset type label for dashboard/reporting, e.g. server, endpoint, database.",
+    )
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
     os_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
@@ -177,6 +182,9 @@ class Asset(Base):
     )
     alert_snapshots: Mapped[list[AlertSnapshot]] = relationship(
         "AlertSnapshot", back_populates="asset", cascade="all, delete-orphan"
+    )
+    activity_logs: Mapped[list[AssetActivityLog]] = relationship(
+        "AssetActivityLog", back_populates="asset", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
@@ -269,4 +277,39 @@ class AlertSnapshot(Base):
         return (
             f"AlertSnapshot(id={self.id}, asset_id={self.asset_id}, "
             f"rule_level={self.rule_level}, event_time={self.event_time.isoformat()})"
+        )
+
+
+# =============================================================================
+# Asset Activity Log
+# =============================================================================
+class AssetActivityLog(Base):
+    """Stores notable asset lifecycle and security-related events for reports."""
+
+    __tablename__ = "asset_activity_logs"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    asset_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    activity_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    activity_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    asset: Mapped[Asset] = relationship("Asset", back_populates="activity_logs")
+
+    def __repr__(self) -> str:
+        return (
+            f"AssetActivityLog(id={self.id}, asset_id={self.asset_id}, "
+            f"activity_type={self.activity_type!r}, event_time={self.event_time.isoformat()})"
         )

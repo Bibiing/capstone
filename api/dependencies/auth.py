@@ -4,7 +4,7 @@ Provides both the Firebase-backed auth service singleton and request-time
 bearer token validation for protected backend endpoints.
 """
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ def get_auth_service() -> AuthService:
 
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: Session = Depends(get_db_session),
 ) -> AuthenticatedUser:
@@ -80,13 +81,17 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return AuthenticatedUser(
+    authenticated_user = AuthenticatedUser(
         user_id=user.user_id,
         username=user.username,
         email=user.email,
         role=AuthRole(user.role.value),
         firebase_uid=user.firebase_uid,
     )
+
+    request.state.authenticated_user = authenticated_user
+
+    return authenticated_user
 
 
 def require_roles(*allowed_roles: AuthRole):

@@ -95,7 +95,7 @@ Frontend obtains Firebase ID Token
   - verify Firebase token
   - sync local user
   - enforce email verification
-  - enforce role onboarding
+  - auto-activate account on first verified sign-in
           |
           v
 Backend JWT (Bearer)
@@ -118,7 +118,7 @@ Wazuh Manager API (55000)         Wazuh Indexer API (9200)
 PostgreSQL (users, assets, risk_scores, alert_snapshots)
                          |
                          v
-FastAPI routes (auth, assets, scores, simulate)
+FastAPI routes (auth, assets, scores, simulate, dashboard, observability)
 ```
 
 ---
@@ -214,7 +214,7 @@ Tanggung jawab:
 
 - sinkronisasi user Firebase ke PostgreSQL
 - enforcement verified email
-- role onboarding
+- aktivasi otomatis akun saat sign-in pertama setelah email terverifikasi
 - penerbitan backend JWT
 
 ### 7.3 wazuh_service.py
@@ -261,12 +261,19 @@ Job periodik:
 - GET /scores/latest
 - GET /scores/{asset_id}
 - GET /trends/{asset_id}
+- GET /dashboard/summary
+- GET /dashboard/risk-trend
 
 ### 8.3 Authenticated + Role CISO
 
 - POST /assets/sync/agents
 - POST /simulate/spike
 - POST /simulate/remediation
+- GET /dashboard/latest-alerts
+- GET /dashboard/assets-table
+- GET /dashboard/assets/{asset_id}/detail
+- GET /dashboard/assets/{asset_id}/security-report
+- GET /metrics
 
 Catatan:
 
@@ -308,6 +315,11 @@ FIREBASE_REQUIRE_VERIFIED_EMAIL=true
 # Auth rate limits
 AUTH_LOGIN_LIMIT_PER_15M=10
 AUTH_PASSWORD_RESET_LIMIT_PER_HOUR=10
+
+# Dashboard hardening
+DASHBOARD_RATE_LIMIT_PER_MINUTE=120
+DASHBOARD_RATE_LIMIT_WINDOW_SECONDS=60
+METRICS_ENABLED=true
 
 # Scoring
 WEIGHT_VULNERABILITY=0.3

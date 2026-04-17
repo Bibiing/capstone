@@ -3,7 +3,7 @@
 Auth ownership model:
 - Firebase handles credential providers (email/password and Google).
 - Backend verifies Firebase ID tokens and maps identities to local User records.
-- Local role onboarding remains in PostgreSQL and is mandatory on first sign-in.
+- Account role is captured at register and account activation is automatic after email verification.
 """
 
 from __future__ import annotations

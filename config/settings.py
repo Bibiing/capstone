@@ -220,12 +220,6 @@ class Settings(BaseSettings):
         le=500,
         description="Max login requests per email per 15 minutes.",
     )
-    auth_verify_limit_per_15m: int = Field(
-        default=20,
-        ge=1,
-        le=500,
-        description="Max OTP verify requests per email per 15 minutes.",
-    )
     auth_password_reset_limit_per_hour: int = Field(
         default=10,
         ge=1,
@@ -253,6 +247,22 @@ class Settings(BaseSettings):
     dashboard_api_url: str = Field(
         default="http://localhost:8000",
         description="Base URL of the FastAPI backend (used by Streamlit dashboard).",
+    )
+    dashboard_rate_limit_per_minute: int = Field(
+        default=120,
+        ge=10,
+        le=2000,
+        description="Max dashboard read requests per identity (token/IP) per minute.",
+    )
+    dashboard_rate_limit_window_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=3600,
+        description="Rate limit window size in seconds for dashboard endpoints.",
+    )
+    metrics_enabled: bool = Field(
+        default=True,
+        description="Enable in-memory API metrics collection and metrics endpoint.",
     )
 
     # ── Cross-field Validation ────────────────────────────────────────────────

@@ -138,7 +138,7 @@ class FirebaseSessionResponse(BaseModel):
     )
     role_required: bool = Field(
         ...,
-        description="Legacy compatibility flag. Always false in current Firebase-first flow.",
+        description="Legacy compatibility flag kept for backward-compatible frontend contracts.",
     )
     message: str
     session: Optional[LoginResponse] = Field(
@@ -159,8 +159,11 @@ class AuthenticatedUser(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "message": "OTP has been resent to your email address.",
-                "expires_in_minutes": 15,
+                "user_id": 1,
+                "username": "security.manager",
+                "email": "security.manager@example.com",
+                "role": "Manajemen",
+                "firebase_uid": "firebase-uid-example",
             }
         }
 
@@ -205,6 +208,7 @@ class AssetResponse(BaseModel):
     asset_id: str
     agent_id: str
     name: str
+    asset_type: Optional[str]
     ip_address: Optional[str]
     os_type: Optional[str]
     status: Optional[str]
@@ -385,6 +389,262 @@ class TrendResponse(BaseModel):
                 ],
             }
         }
+
+
+# =============================================================================
+# Dashboard Schemas
+# =============================================================================
+class DashboardTrendPeriod(str, Enum):
+    """Supported period filters for dashboard trend endpoint."""
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    YEARLY = "yearly"
+
+
+class DashboardSortOrder(str, Enum):
+    """Sort direction for dashboard list endpoints."""
+
+    ASC = "asc"
+    DESC = "desc"
+
+
+class DashboardAssetsSortBy(str, Enum):
+    """Sortable columns for dashboard assets table."""
+
+    ASSET_NAME = "asset_name"
+    ASSET_TYPE = "asset_type"
+    RISK_SCORE = "risk_score"
+    STATUS = "status"
+    LAST_UPDATED = "last_updated"
+
+
+class DashboardRiskLevel(str, Enum):
+    """Risk level filter for dashboard assets table."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class DashboardMetaResponse(BaseModel):
+    """Metadata for dashboard responses."""
+
+    generated_at: datetime
+    request_id: Optional[str] = None
+    page: Optional[int] = None
+    page_size: Optional[int] = None
+    total_items: Optional[int] = None
+    total_pages: Optional[int] = None
+
+
+class DashboardRiskDistribution(BaseModel):
+    """Asset distribution by risk severity."""
+
+    low: int = 0
+    medium: int = 0
+    high: int = 0
+    critical: int = 0
+
+
+class DashboardSummaryData(BaseModel):
+    """Summary cards for dashboard header."""
+
+    total_assets: int
+    risk_distribution: DashboardRiskDistribution
+
+
+class DashboardSummaryResponse(BaseModel):
+    """Response model for dashboard summary endpoint."""
+
+    data: DashboardSummaryData
+    meta: DashboardMetaResponse
+
+
+class DashboardRiskTrendPoint(BaseModel):
+    """One aggregated point in dashboard risk trend."""
+
+    timestamp: datetime
+    average_risk: float
+    low_count: int
+    medium_count: int
+    high_count: int
+    critical_count: int
+    total_samples: int
+
+
+class DashboardRiskTrendData(BaseModel):
+    """Trend payload for dashboard line chart."""
+
+    period: DashboardTrendPeriod
+    total_points: int
+    points: list[DashboardRiskTrendPoint]
+
+
+class DashboardRiskTrendResponse(BaseModel):
+    """Response model for dashboard risk trend endpoint."""
+
+    data: DashboardRiskTrendData
+    meta: DashboardMetaResponse
+
+
+class DashboardLatestAlertItem(BaseModel):
+    """Latest alert item for dashboard alert feed."""
+
+    asset_id: str
+    asset_name: str
+    risk_status: str
+    event_time: datetime
+    alert_summary: Optional[str] = None
+    rule_level: int
+
+
+class DashboardLatestAlertsResponse(BaseModel):
+    """Response model for latest alerts endpoint."""
+
+    data: list[DashboardLatestAlertItem]
+    meta: DashboardMetaResponse
+
+
+class DashboardAssetsTableItem(BaseModel):
+    """One row in dashboard assets table."""
+
+    asset_id: str
+    asset_name: str
+    asset_type: Optional[str] = None
+    risk_score: Optional[float] = None
+    risk_status: str
+    status: Optional[str] = None
+    last_updated: datetime
+
+
+class DashboardAssetsTableResponse(BaseModel):
+    """Response model for dashboard assets table endpoint."""
+
+    data: list[DashboardAssetsTableItem]
+    meta: DashboardMetaResponse
+
+
+class DashboardAssetProfile(BaseModel):
+    """Normalized asset profile used by detail/report endpoints."""
+
+    asset_id: str
+    asset_name: str
+    asset_type: Optional[str] = None
+    asset_status: Optional[str] = None
+    ip_address: Optional[str] = None
+    last_updated: datetime
+
+
+class DashboardRiskSummary(BaseModel):
+    """Current risk summary for an asset."""
+
+    current_risk_score: float
+    risk_status: str
+    risk_description: str
+    impact_score: Optional[float] = None
+    vulnerability_score: Optional[float] = None
+    threat_score: Optional[float] = None
+
+
+class DashboardVulnerabilityItem(BaseModel):
+    """Vulnerability item shown in asset detail/report sections."""
+
+    name: str
+    score: float
+    status: str
+    detail: Optional[str] = None
+
+
+class DashboardSecurityAlertItem(BaseModel):
+    """Security alert item for dashboard detail/report endpoints."""
+
+    event_time: datetime
+    rule_level: int
+    rule_id: Optional[str] = None
+    description: Optional[str] = None
+
+
+class DashboardActivityLogItem(BaseModel):
+    """Asset activity log item."""
+
+    event_time: datetime
+    activity_type: str
+    activity_detail: Optional[str] = None
+
+
+class DashboardRiskHistoryItem(BaseModel):
+    """7-day risk history entry."""
+
+    date: datetime
+    risk_score: float
+    status: str
+    detail: Optional[str] = None
+
+
+class DashboardAssetDetailData(BaseModel):
+    """Payload for the asset detail popup endpoint."""
+
+    asset_profile: DashboardAssetProfile
+    risk_summary: DashboardRiskSummary
+    vulnerabilities: list[DashboardVulnerabilityItem]
+    security_alerts: list[DashboardSecurityAlertItem]
+    activity_log: list[DashboardActivityLogItem]
+    last_updated: datetime
+
+
+class DashboardAssetDetailResponse(BaseModel):
+    """Response model for dashboard asset detail endpoint."""
+
+    data: DashboardAssetDetailData
+    meta: DashboardMetaResponse
+
+
+class DashboardAssetSecurityReportData(BaseModel):
+    """Payload for the asset security report endpoint."""
+
+    asset_profile: DashboardAssetProfile
+    risk_summary: DashboardRiskSummary
+    risk_history_7d: list[DashboardRiskHistoryItem]
+    vulnerabilities: list[DashboardVulnerabilityItem]
+    security_alerts: list[DashboardSecurityAlertItem]
+
+
+class DashboardAssetSecurityReportResponse(BaseModel):
+    """Response model for dashboard asset security report endpoint."""
+
+    data: DashboardAssetSecurityReportData
+    meta: DashboardMetaResponse
+
+
+# =============================================================================
+# Observability Schemas
+# =============================================================================
+class MetricsLatency(BaseModel):
+    """Latency percentile and average metrics."""
+
+    avg: float
+    p50: float
+    p95: float
+    p99: float
+    count: int
+
+
+class MetricsSnapshotResponse(BaseModel):
+    """In-memory API metrics snapshot for operations monitoring."""
+
+    total_requests: int
+    success_count: int
+    client_error_count: int
+    server_error_count: int
+    error_rate_5xx: float
+    latency_ms: MetricsLatency
+    latency_histogram_ms: dict[str, int]
+    status_classes: dict[str, int]
+    requests_by_endpoint: dict[str, int]
+    requests_by_role: dict[str, int]
 
 
 # =============================================================================

@@ -10,6 +10,7 @@ Structure:
 """
 
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from api.dependencies.observability import get_metrics_service
 from api.schemas import ErrorResponse, HealthCheckResponse
 from api.services.scheduler import ScoringScheduler
 from config.settings import get_settings
@@ -29,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 settings = get_settings()
+metrics_service = get_metrics_service()
 
 
 @asynccontextmanager
@@ -90,12 +93,36 @@ async def add_request_id_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def add_process_time_middleware(request: Request, call_next):
-    """Add response time header."""
-    import time
-    start_time = time.time()
+    """Add timing headers, structured access logs, and metrics sampling."""
+    start_time = time.perf_counter()
     response = await call_next(request)
-    process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(process_time)
+
+    process_time_ms = (time.perf_counter() - start_time) * 1000.0
+    response.headers["X-Process-Time"] = f"{process_time_ms:.2f}"
+
+    authenticated_user = getattr(request.state, "authenticated_user", None)
+    user_id = getattr(authenticated_user, "user_id", None)
+    role = getattr(getattr(authenticated_user, "role", None), "value", "anonymous")
+    request_id = getattr(request.state, "request_id", None)
+    endpoint = f"{request.method} {request.url.path}"
+
+    if settings.metrics_enabled:
+        metrics_service.record(
+            endpoint=endpoint,
+            status_code=response.status_code,
+            latency_ms=process_time_ms,
+            role=role,
+        )
+
+    logger.info(
+        "api_access request_id=%s user_id=%s role=%s endpoint=%s status=%s latency_ms=%.2f",
+        request_id,
+        user_id,
+        role,
+        endpoint,
+        response.status_code,
+        process_time_ms,
+    )
     return response
 
 
@@ -115,6 +142,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content=error_response.model_dump(),
+        headers=getattr(exc, "headers", None),
     )
 
 
@@ -230,6 +258,17 @@ async def root(_current_user=Depends(get_current_user)) -> dict:
                 "POST /simulate/spike",
                 "POST /simulate/remediation",
             ],
+            "dashboard": [
+                "GET /dashboard/summary",
+                "GET /dashboard/risk-trend",
+                "GET /dashboard/latest-alerts",
+                "GET /dashboard/assets-table",
+                "GET /dashboard/assets/{asset_id}/detail",
+                "GET /dashboard/assets/{asset_id}/security-report",
+            ],
+            "observability": [
+                "GET /metrics",
+            ],
         },
     }
 
@@ -239,13 +278,15 @@ async def root(_current_user=Depends(get_current_user)) -> dict:
 # ============================================================================
 
 # Import route routers
-from api.routes import auth, assets, scores, simulate
+from api.routes import auth, assets, dashboard, observability, scores, simulate
 
 # Mount routes
 app.include_router(auth.router)
 app.include_router(assets.router)
 app.include_router(scores.router)
 app.include_router(simulate.router)
+app.include_router(dashboard.router)
+app.include_router(observability.router)
 
 
 logger.info(

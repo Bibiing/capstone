@@ -1,16 +1,14 @@
 """
-Authentication utilities for password hashing, JWT tokens, and OTP handling.
+Authentication utilities for password hashing, JWT tokens.
 
 Includes:
     - Password hashing with bcrypt
     - JWT token generation and validation
-    - OTP code generation
     - Token payload models
 """
 
 from __future__ import annotations
 
-import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -147,45 +145,3 @@ def verify_token(token: str) -> Optional[TokenPayload]:
         return TokenPayload(**payload)
     except JWTError:
         return None
-
-
-# ============================================================================
-# OTP Management
-# ============================================================================
-def generate_otp(length: int = 6) -> str:
-    """
-    Generate a random OTP code.
-
-    Args:
-        length: OTP code length (default: 6 digits)
-
-    Returns:
-        Random numeric string of specified length
-    """
-    return "".join(str(secrets.randbelow(10)) for _ in range(length))
-
-
-def get_otp_expiration_time() -> datetime:
-    """
-    Get the expiration time for a newly generated OTP.
-
-    Returns:
-        datetime object representing when OTP expires
-    """
-    settings = get_settings()
-    return datetime.now(timezone.utc) + timedelta(
-        minutes=settings.otp_expiration_minutes
-    )
-
-
-def is_otp_expired(expires_at: datetime) -> bool:
-    """
-    Check if an OTP code has expired.
-
-    Args:
-        expires_at: OTP expiration datetime
-
-    Returns:
-        True if expired, False otherwise
-    """
-    return datetime.now(timezone.utc) > expires_at

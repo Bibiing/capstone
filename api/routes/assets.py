@@ -114,6 +114,7 @@ def _asset_to_response(asset) -> AssetResponse:
         asset_id=str(asset.id),
         agent_id=asset.agent_id,
         name=asset.name,
+        asset_type=asset.asset_type,
         ip_address=asset.ip_address,
         os_type=asset.os_type,
         status=asset.status,
