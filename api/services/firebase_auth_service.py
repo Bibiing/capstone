@@ -215,6 +215,86 @@ class FirebaseAuthService:
         )
 
 
+def _build_service_account_from_env_fields(settings: Settings) -> dict[str, str] | None:
+    raw_private_key = settings.firebase_private_key
+    client_email = settings.firebase_client_email
+    private_key_id = settings.firebase_private_key_id
+    client_id = settings.firebase_client_id
+
+    has_split_fields = any(
+        [
+            raw_private_key,
+            client_email,
+            private_key_id,
+            client_id,
+        ]
+    )
+    if not has_split_fields:
+        return None
+
+    missing_fields = [
+        key
+        for key, value in {
+            "FIREBASE_PROJECT_ID": settings.firebase_project_id,
+            "FIREBASE_PRIVATE_KEY_ID": private_key_id,
+            "FIREBASE_PRIVATE_KEY": raw_private_key,
+            "FIREBASE_CLIENT_EMAIL": client_email,
+            "FIREBASE_CLIENT_ID": client_id,
+        }.items()
+        if not value
+    ]
+    if missing_fields:
+        raise RuntimeError("Missing Firebase env fields: " + ", ".join(missing_fields))
+
+    assert raw_private_key is not None
+    assert client_email is not None
+    assert private_key_id is not None
+    assert client_id is not None
+
+    private_key = raw_private_key.replace("\\n", "\n")
+    client_x509_cert_url = settings.firebase_client_x509_cert_url or (
+        "https://www.googleapis.com/robot/v1/metadata/x509/"
+        f"{client_email.replace('@', '%40')}"
+    )
+
+    return {
+        "type": settings.firebase_account_type,
+        "project_id": settings.firebase_project_id,
+        "private_key_id": private_key_id,
+        "private_key": private_key,
+        "client_email": client_email,
+        "client_id": client_id,
+        "auth_uri": settings.firebase_auth_uri,
+        "token_uri": settings.firebase_token_uri,
+        "auth_provider_x509_cert_url": settings.firebase_auth_provider_x509_cert_url,
+        "client_x509_cert_url": client_x509_cert_url,
+        "universe_domain": settings.firebase_universe_domain,
+    }
+
+
+def _build_credentials(settings: Settings) -> credentials.Base:
+    if settings.firebase_service_account_json:
+        try:
+            raw_service_account = json.loads(settings.firebase_service_account_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON.") from exc
+
+        if not isinstance(raw_service_account, dict):
+            raise RuntimeError("FIREBASE_SERVICE_ACCOUNT_JSON must be a JSON object.")
+
+        private_key = raw_service_account.get("private_key")
+        if isinstance(private_key, str):
+            raw_service_account["private_key"] = private_key.replace("\\n", "\n")
+
+        return credentials.Certificate(raw_service_account)
+
+    service_account = _build_service_account_from_env_fields(settings)
+    if service_account:
+        return credentials.Certificate(service_account)
+
+    return credentials.ApplicationDefault()
+
+
 def _get_firebase_app(settings: Settings) -> firebase_admin.App:
     """Initialize and cache Firebase app instance for this process."""
     global _FIREBASE_APP
@@ -226,19 +306,7 @@ def _get_firebase_app(settings: Settings) -> firebase_admin.App:
         _FIREBASE_APP = firebase_admin.get_app()
         return _FIREBASE_APP
 
-    cert_data = None
-    if settings.firebase_service_account_json:
-        try:
-            cert_data = json.loads(settings.firebase_service_account_json)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Invalid FIREBASE_SERVICE_ACCOUNT_JSON value") from exc
-
-    if cert_data:
-        cred = credentials.Certificate(cert_data)
-    elif settings.firebase_service_account_path:
-        cred = credentials.Certificate(settings.firebase_service_account_path)
-    else:
-        cred = credentials.ApplicationDefault()
+    cred = _build_credentials(settings)
 
     _FIREBASE_APP = firebase_admin.initialize_app(
         cred,

@@ -184,13 +184,52 @@ class Settings(BaseSettings):
             "(send email verification / password reset)."
         ),
     )
-    firebase_service_account_path: str | None = Field(
-        default=None,
-        description="Absolute path to Firebase service account JSON file.",
-    )
     firebase_service_account_json: str | None = Field(
         default=None,
         description="Inline JSON string for Firebase service account credentials.",
+    )
+    firebase_account_type: str = Field(
+        default="service_account",
+        description="Service account type for split Firebase credential fields.",
+    )
+    firebase_private_key_id: str | None = Field(
+        default=None,
+        description="Firebase service account private_key_id.",
+    )
+    firebase_private_key: str | None = Field(
+        default=None,
+        description="Firebase service account private_key (use escaped \\n in .env).",
+    )
+    firebase_client_email: str | None = Field(
+        default=None,
+        description="Firebase service account client_email.",
+    )
+    firebase_client_id: str | None = Field(
+        default=None,
+        description="Firebase service account client_id.",
+    )
+    firebase_auth_uri: str = Field(
+        default="https://accounts.google.com/o/oauth2/auth",
+        description="Firebase service account auth_uri.",
+    )
+    firebase_token_uri: str = Field(
+        default="https://oauth2.googleapis.com/token",
+        description="Firebase service account token_uri.",
+    )
+    firebase_auth_provider_x509_cert_url: str = Field(
+        default="https://www.googleapis.com/oauth2/v1/certs",
+        description="Firebase service account auth_provider_x509_cert_url.",
+    )
+    firebase_client_x509_cert_url: str | None = Field(
+        default=None,
+        description=(
+            "Optional Firebase client_x509_cert_url. "
+            "If omitted, it is derived from FIREBASE_CLIENT_EMAIL."
+        ),
+    )
+    firebase_universe_domain: str = Field(
+        default="googleapis.com",
+        description="Firebase service account universe_domain.",
     )
     firebase_require_verified_email: bool = Field(
         default=True,
