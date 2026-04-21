@@ -38,6 +38,10 @@ metrics_service = get_metrics_service()
 async def lifespan(app: FastAPI):
     """Manage application startup/shutdown resources."""
     scheduler = None
+    logger.info(
+        "Background scoring scheduler startup check | enabled=%s",
+        settings.scoring_scheduler_enabled,
+    )
 
     if settings.scoring_scheduler_enabled:
         try:
@@ -47,6 +51,10 @@ async def lifespan(app: FastAPI):
             logger.info("Background scoring scheduler enabled")
         except Exception as exc:
             logger.exception("Failed to start scoring scheduler: %s", exc)
+    else:
+        logger.info(
+            "Background scoring scheduler disabled by config "
+        )
 
     try:
         yield
